@@ -14,7 +14,9 @@ use std::{
 use delegate::delegate;
 use index_vec::IndexVec;
 use pindakaas::{
-	solver::{ClausePersistence, Propagator as IpasirPropagator, SearchDecision, SolvingActions},
+	solver::{
+		ClausePersistence, Propagator as PropagatorExtension, SearchDecision, SolvingActions,
+	},
 	Lit as RawLit, Var as RawVar,
 };
 use tracing::{debug, trace};
@@ -132,9 +134,9 @@ pub(crate) struct State {
 	pub(crate) enqueued: IndexVec<PropRef, bool>,
 }
 
-impl IpasirPropagator for Engine {
+impl PropagatorExtension for Engine {
 	fn reason_persistence(&self) -> ClausePersistence {
-		ClausePersistence::Irreduntant
+		ClausePersistence::Forgettable
 	}
 
 	fn notify_assignments(&mut self, lits: &[RawLit]) {

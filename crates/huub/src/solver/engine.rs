@@ -277,11 +277,11 @@ impl PropagatorExtension for Engine {
 		clause
 	}
 
-	#[tracing::instrument(level = "debug", skip(self, slv, model))]
+	#[tracing::instrument(level = "debug", skip(self, slv, _sol))]
 	fn check_solution(
 		&mut self,
 		slv: &mut dyn SolvingActions,
-		model: &dyn pindakaas::Valuation,
+		_sol: &dyn pindakaas::Valuation,
 	) -> bool {
 		debug_assert!(self.state.conflict.is_none());
 		// If there is a known conflict, return false
@@ -309,7 +309,6 @@ impl PropagatorExtension for Engine {
 					ctx.state.int_vars[r].order_encoding,
 					OrderStorage::Lazy(_)
 				));
-				debug_assert_eq!(lb, ctx.state.int_vars[r].get_value(model));
 
 				// Ensure the lazy literal for the upper bound exists
 				let ub_lit = ctx.get_intref_lit(r, LitMeaning::Less(lb + 1));

@@ -8,10 +8,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use pindakaas::{
-	solver::propagation::PropagatingSolver, Lit as RawLit, Valuation as SatValuation,
-	Var as RawVar, VarRange,
-};
+use pindakaas::{solver::propagation::PropagatingSolver, Lit as RawLit, Var as RawVar, VarRange};
 use rangelist::RangeList;
 
 use crate::{
@@ -370,38 +367,6 @@ impl IntVar {
 					index = node.prev as usize;
 				}
 				ret
-			}
-		}
-	}
-
-	pub(crate) fn get_value<V: SatValuation + ?Sized>(&self, model: &V) -> IntVal {
-		match &self.order_encoding {
-			OrderStorage::Eager { storage, .. } => {
-				let mut val_iter = self.domain.clone().into_iter().flatten();
-				for l in storage.clone() {
-					match model.value(l.into()) {
-						false => return val_iter.next().unwrap(),
-						true => {
-							let _ = val_iter.next();
-						}
-					}
-				}
-				*self.domain.upper_bound().unwrap()
-			}
-			OrderStorage::Lazy(storage) => {
-				let mut last_val = *self.domain.lower_bound().unwrap();
-				if storage.storage.is_empty() {
-					return last_val;
-				}
-				let mut i = storage.min_index as usize;
-				while model.value(storage.storage[i].var.into()) {
-					last_val = storage.storage[i].val;
-					if !storage.storage[i].has_next {
-						break;
-					}
-					i = storage.storage[i].next as usize;
-				}
-				last_val
 			}
 		}
 	}

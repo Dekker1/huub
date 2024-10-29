@@ -26,7 +26,7 @@ use crate::{
 	},
 	solver::{
 		engine::{
-			int_var::{IntVarRef, LazyLitDef},
+			int_var::{IntVarRef, LazyLitDef, OrderStorage},
 			trace_new_lit,
 			trail::TrailedInt,
 			Engine, PropRef, SearchStatistics,
@@ -421,6 +421,15 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 		};
 
 		let (engine, result) = self.oracle.solve_assuming(assumptions);
+		let get_int_val = |engine: &Engine, iv: IntVarRef| {
+			let var_def = &engine.state.int_vars[iv];
+			let val = var_def.get_lower_bound(&engine.state.trail);
+			debug_assert!(
+				matches!(var_def.order_encoding, OrderStorage::Lazy(_))
+					|| val == var_def.get_upper_bound(&engine.state.trail)
+			);
+			val
+		};
 		match result {
 			SatSolveResult::Satisfied(sol) => {
 				let wrapper: &dyn Valuation = &|x| match x {
@@ -429,15 +438,12 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 						BoolViewInner::Const(b) => b,
 					}),
 					SolverView::Int(var) => Value::Int(match var.0 {
-						IntViewInner::VarRef(iv) => engine.state.int_vars[iv].get_value(&sol),
+						IntViewInner::VarRef(iv) => get_int_val(engine, iv),
 						IntViewInner::Const(i) => i,
 						IntViewInner::Linear {
 							transformer: transform,
 							var,
-						} => {
-							let val = engine.state.int_vars[var].get_value(&sol);
-							transform.transform(val)
-						}
+						} => transform.transform(get_int_val(engine, var)),
 						IntViewInner::Bool { transformer, lit } => {
 							transformer.transform(sol.value(lit) as IntVal)
 						}

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pindakaas::{solver::VarRange, Var as RawVar};
+use pindakaas::{Var as RawVar, VarRange};
 
 use crate::{solver::engine::int_var::IntVarRef, LitMeaning};
 

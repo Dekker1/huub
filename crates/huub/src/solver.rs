@@ -10,9 +10,9 @@ use delegate::delegate;
 use itertools::Itertools;
 use pindakaas::{
 	solver::{
-		cadical::Cadical, LearnCallback, NextVarRange, PropagatingSolver, PropagatorAccess,
-		SlvTermSignal, SolveAssuming, SolveResult as SatSolveResult, Solver as SolverTrait,
-		TermCallback,
+		cadical::PropagatingCadical,
+		propagation::{PropagatingSolver, WithPropagator},
+		LearnCallback, SlvTermSignal, SolveResult as SatSolveResult, TermCallback,
 	},
 	Cnf, Lit as RawLit, Valuation as SatValuation,
 };
@@ -39,20 +39,6 @@ use crate::{
 	BoolView, IntVal, LitMeaning, ReformulationError,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SolverConfiguration {
-	/// Switch between the activity-based search heuristic and the user-specific search heuristic after each restart.
-	///
-	/// This option is ignored if [`vsids_only`] is set to `true`.
-	toggle_vsids: bool,
-	/// Switch to the activity-based search heuristic after the given number of conflicts.
-	///
-	/// This option is ignored if [`toggle_vsids`] or [`vsids_only`] is set to `true`.
-	vsids_after: Option<u32>,
-	/// Only use the activity-based search heuristic provided by the SAT solver. Ignore the user-specific search heuristic.
-	vsids_only: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Goal {
 	Maximize,
@@ -71,32 +57,31 @@ pub struct InitStatistics {
 	propagators: usize,
 }
 
-pub trait SatSolver:
-	PropagatingSolver
-	+ TermCallback
-	+ LearnCallback
-	+ SolveAssuming
-	+ NextVarRange
-	+ for<'a> From<&'a Cnf>
-where
-	<Self as SolverTrait>::ValueFn: PropagatorAccess,
-{
-}
-
-pub struct Solver<Sat = Cadical>
-where
-	Sat: SatSolver,
-	<Sat as SolverTrait>::ValueFn: PropagatorAccess,
-{
-	pub(crate) oracle: Sat,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolveResult {
 	Satisfied,
 	Unsatisfiable,
 	Complete,
 	Unknown,
+}
+
+#[derive(Clone)]
+pub struct Solver<Oracle = PropagatingCadical<Engine>> {
+	pub(crate) oracle: Oracle,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SolverConfiguration {
+	/// Switch between the activity-based search heuristic and the user-specific search heuristic after each restart.
+	///
+	/// This option is ignored if [`vsids_only`] is set to `true`.
+	toggle_vsids: bool,
+	/// Switch to the activity-based search heuristic after the given number of conflicts.
+	///
+	/// This option is ignored if [`toggle_vsids`] or [`vsids_only`] is set to `true`.
+	vsids_after: Option<u32>,
+	/// Only use the activity-based search heuristic provided by the SAT solver. Ignore the user-specific search heuristic.
+	vsids_only: bool,
 }
 
 fn trace_learned_clause(clause: &mut dyn Iterator<Item = RawLit>) {
@@ -112,11 +97,43 @@ impl InitStatistics {
 	}
 }
 
-impl<Sol, Sat> Solver<Sat>
+impl<Oracle> Solver<Oracle>
 where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
+	Oracle: PropagatingSolver<Engine>,
+	Oracle::Slv: LearnCallback,
 {
+	pub fn set_learn_callback<F: FnMut(&mut dyn Iterator<Item = RawLit>) + 'static>(
+		&mut self,
+		cb: Option<F>,
+	) {
+		if let Some(mut f) = cb {
+			self.oracle.solver_mut().set_learn_callback(Some(
+				move |clause: &mut dyn Iterator<Item = RawLit>| {
+					trace_learned_clause(clause);
+					f(clause);
+				},
+			));
+		} else {
+			self.oracle
+				.solver_mut()
+				.set_learn_callback(Some(trace_learned_clause));
+		}
+	}
+}
+
+impl<Oracle> Solver<Oracle>
+where
+	Oracle: PropagatingSolver<Engine>,
+	Oracle::Slv: TermCallback,
+{
+	delegate! {
+		to self.oracle.solver_mut() {
+			pub fn set_terminate_callback<F: FnMut() -> SlvTermSignal + 'static>(&mut self, cb: Option<F>);
+		}
+	}
+}
+
+impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 	pub(crate) fn add_brancher<P: BrancherPoster>(&mut self, poster: P) {
 		let mut actions = InitializationContext {
 			slv: self,
@@ -154,23 +171,22 @@ where
 	pub fn add_no_good(
 		&mut self,
 		vars: &[SolverView],
-		vals: &[Option<Value>],
+		vals: &[Value],
 	) -> Result<(), ReformulationError> {
 		let clause = vars
 			.iter()
 			.zip_eq(vals)
-			.filter_map(|(var, val)| match var {
-				SolverView::Bool(bv) => {
-					let Value::Bool(val) = val.clone()? else {
-						unreachable!()
-					};
-					Some(if val { !bv } else { *bv })
-				}
+			.map(|(var, val)| match var {
+				SolverView::Bool(bv) => match val {
+					Value::Bool(true) => !bv,
+					Value::Bool(false) => *bv,
+					_ => unreachable!(),
+				},
 				SolverView::Int(iv) => {
-					let Value::Int(val) = val.clone()? else {
+					let Value::Int(val) = val.clone() else {
 						unreachable!()
 					};
-					Some(self.get_int_lit(*iv, LitMeaning::NotEq(val)))
+					self.get_int_lit(*iv, LitMeaning::NotEq(val))
 				}
 			})
 			.collect_vec();
@@ -273,13 +289,11 @@ where
 			let status = self.solve_assuming(
 				assump,
 				|value| {
-					obj_curr = value(SolverView::Int(objective)).map(|val| {
-						if let Value::Int(i) = val {
-							i
-						} else {
-							unreachable!()
-						}
-					});
+					obj_curr = if let Value::Int(i) = value(SolverView::Int(objective)) {
+						Some(i)
+					} else {
+						unreachable!()
+					};
 					on_sol(value);
 				},
 				|_| {},
@@ -330,11 +344,11 @@ where
 	}
 
 	pub(crate) fn engine(&self) -> &Engine {
-		self.oracle.propagator().unwrap()
+		self.oracle.propagator()
 	}
 
 	pub(crate) fn engine_mut(&mut self) -> &mut Engine {
-		self.oracle.propagator_mut().unwrap()
+		self.oracle.propagator_mut()
 	}
 
 	/// Wrapper function for `all_solutions` that collects all solutions and returns them in a vector
@@ -349,7 +363,7 @@ where
 		let status = self.all_solutions(vars, |sol| {
 			let mut sol_vec = Vec::with_capacity(vars.len());
 			for v in vars {
-				sol_vec.push(sol(*v).unwrap());
+				sol_vec.push(sol(*v));
 			}
 			solutions.push(sol_vec);
 		});
@@ -370,35 +384,13 @@ where
 		}
 	}
 
+	/// Deconstruct the Solver object and return the Oracle object.
+	pub fn into_oracle(self) -> Oracle::Slv {
+		self.oracle.into_parts().0
+	}
+
 	pub fn search_statistics(&self) -> &SearchStatistics {
 		&self.engine().state.statistics
-	}
-
-	pub fn set_learn_callback<F: FnMut(&mut dyn Iterator<Item = RawLit>) + 'static>(
-		&mut self,
-		cb: Option<F>,
-	) {
-		if let Some(mut f) = cb {
-			self.oracle.set_learn_callback(Some(
-				move |clause: &mut dyn Iterator<Item = RawLit>| {
-					trace_learned_clause(clause);
-					f(clause);
-				},
-			));
-		} else {
-			self.oracle.set_learn_callback(Some(trace_learned_clause));
-		}
-	}
-
-	delegate! {
-		to self.oracle {
-			pub fn set_terminate_callback<F: FnMut() -> SlvTermSignal + 'static>(&mut self, cb: Option<F>);
-		}
-		to self.engine_mut().state {
-			pub fn set_vsids_after(&mut self, conflicts: Option<u32>);
-			pub fn set_vsids_only(&mut self, enable: bool);
-			pub fn set_toggle_vsids(&mut self, enable: bool);
-		}
 	}
 
 	/// Try and find a solution to the problem for which the Solver was initialized.
@@ -428,113 +420,60 @@ where
 			return SolveResult::Unsatisfiable;
 		};
 
-		let status = self.oracle.solve_assuming(
-			assumptions,
-			|model| {
-				let engine: &Engine = model.propagator().unwrap();
+		let (engine, result) = self.oracle.solve_assuming(assumptions);
+		match result {
+			SatSolveResult::Satisfied(sol) => {
 				let wrapper: &dyn Valuation = &|x| match x {
-					SolverView::Bool(lit) => match lit.0 {
-						BoolViewInner::Lit(lit) => model.value(lit).map(Value::Bool),
-						BoolViewInner::Const(b) => Some(Value::Bool(b)),
-					},
-					SolverView::Int(var) => match var.0 {
-						IntViewInner::VarRef(iv) => {
-							Some(Value::Int(engine.state.int_vars[iv].get_value(model)))
-						}
-						IntViewInner::Const(i) => Some(Value::Int(i)),
+					SolverView::Bool(lit) => Value::Bool(match lit.0 {
+						BoolViewInner::Lit(lit) => sol.value(lit),
+						BoolViewInner::Const(b) => b,
+					}),
+					SolverView::Int(var) => Value::Int(match var.0 {
+						IntViewInner::VarRef(iv) => engine.state.int_vars[iv].get_value(&sol),
+						IntViewInner::Const(i) => i,
 						IntViewInner::Linear {
 							transformer: transform,
 							var,
 						} => {
-							let val = engine.state.int_vars[var].get_value(model);
-							Some(Value::Int(transform.transform(val)))
+							let val = engine.state.int_vars[var].get_value(&sol);
+							transform.transform(val)
 						}
-						IntViewInner::Bool { transformer, lit } => model
-							.value(lit)
-							.map(|v| Value::Int(transformer.transform(v as IntVal))),
-					},
+						IntViewInner::Bool { transformer, lit } => {
+							transformer.transform(sol.value(lit) as IntVal)
+						}
+					}),
 				};
 				on_sol(wrapper);
-			},
-			|fail_fn| on_fail(fail_fn),
-		);
-		match status {
-			SatSolveResult::Sat => SolveResult::Satisfied,
-			SatSolveResult::Unsat => SolveResult::Unsatisfiable,
+				SolveResult::Satisfied
+			}
+			SatSolveResult::Unsatisfiable(fail) => {
+				on_fail(&fail);
+				SolveResult::Unsatisfiable
+			}
 			SatSolveResult::Unknown => SolveResult::Unknown,
+		}
+	}
+
+	delegate! {
+		to self.engine_mut().state {
+			pub fn set_toggle_vsids(&mut self, enable: bool);
+			pub fn set_vsids_after(&mut self, conflicts: Option<u32>);
+			pub fn set_vsids_only(&mut self, enable: bool);
 		}
 	}
 }
 
-impl<Slv> SatSolver for Slv
-where
-	Slv: PropagatingSolver
-		+ TermCallback
-		+ LearnCallback
-		+ SolveAssuming
-		+ NextVarRange
-		+ for<'a> From<&'a Cnf>,
-	<Slv as SolverTrait>::ValueFn: PropagatorAccess,
-{
-}
-
-impl<Sol, Sat> fmt::Debug for Solver<Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol> + fmt::Debug,
-{
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.debug_struct("Solver")
-			.field("oracle", &self.oracle)
-			.field("engine", self.engine())
-			.finish()
-	}
-}
-
-impl<Sol, Sat> From<&Cnf> for Solver<Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-{
-	fn from(value: &Cnf) -> Self {
-		let mut core: Sat = value.into();
-		core.set_external_propagator(Some(Engine::default()));
-		core.set_learn_callback(Some(trace_learned_clause));
-		Self { oracle: core }
-	}
-}
-
-impl<Sol, Sat> Clone for Solver<Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol> + Clone,
-{
-	fn clone(&self) -> Self {
-		let mut core = self.oracle.clone();
-		let engine = self.engine().clone();
-		core.set_external_propagator(Some(engine));
-		core.set_learn_callback(Some(trace_learned_clause));
-		Self { oracle: core }
-	}
-}
-
-impl<Sol, Sat> DecisionActions for Solver<Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-{
+impl<Oracle: PropagatingSolver<Engine>> DecisionActions for Solver<Oracle> {
 	fn get_intref_lit(&mut self, iv: IntVarRef, meaning: LitMeaning) -> BoolView {
-		// TODO: We currently copy the integer variable struct here to avoid
-		// borrowing issues. Hopefully the compiler sees that this is unnecessary,
-		// but we should check and see if we can avoid this.
-		let mut var = self.engine_mut().state.int_vars[iv].clone();
+		let mut clauses = Vec::new();
+		let (oracle, engine) = self.oracle.access_solving();
+		let var = &mut engine.state.int_vars[iv];
 		let new_var = |def: LazyLitDef| {
 			// Create new variable
-			let v = self.oracle.new_var();
+			let v = oracle.new_var();
 			trace_new_lit!(iv, def, v);
-			self.engine_mut().state.trail.grow_to_boolvar(v);
-			self.oracle.add_observed_var(v);
-			self.engine_mut()
+			engine.state.trail.grow_to_boolvar(v);
+			engine
 				.state
 				.bool_to_int
 				.insert_lazy(v, iv, def.meaning.clone());
@@ -545,12 +484,16 @@ where
 				def.next.map(Into::into),
 			) {
 				trace!(clause = ?cl.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "add clause");
-				self.oracle.add_clause(cl).unwrap();
+				clauses.push(cl);
 			}
 			v
 		};
 		let bv = var.bool_lit(meaning, new_var);
-		self.engine_mut().state.int_vars[iv] = var;
+		for cl in clauses {
+			self.oracle
+				.add_clause(cl)
+				.expect("functional definition cannot make the problem unsatisfiable");
+		}
 		bv
 	}
 
@@ -559,49 +502,50 @@ where
 	}
 }
 
-impl<Sol, Sat> ExplanationActions for Solver<Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-{
+impl<Oracle: PropagatingSolver<Engine>> ExplanationActions for Solver<Oracle> {
+	fn get_int_val_lit(&mut self, var: IntView) -> Option<BoolView> {
+		let val = self.get_int_val(var)?;
+		Some(self.get_int_lit(var, LitMeaning::Eq(val)))
+	}
+
 	delegate! {
 		to self.engine().state {
 			fn try_int_lit(&self, var: IntView, meaning: LitMeaning) -> Option<BoolView>;
 		}
 		to self.engine_mut().state {
+			fn get_int_lit_relaxed(&mut self, var: IntView, meaning: LitMeaning) -> (BoolView, LitMeaning);
 			fn get_int_lower_bound_lit(&mut self, var: IntView) -> BoolView;
 			fn get_int_upper_bound_lit(&mut self, var: IntView) -> BoolView;
-			fn get_int_lit_relaxed(&mut self, var: IntView, meaning: LitMeaning) -> (BoolView, LitMeaning);
 		}
-	}
-
-	fn get_int_val_lit(&mut self, var: IntView) -> Option<BoolView> {
-		let val = self.get_int_val(var)?;
-		Some(self.get_int_lit(var, LitMeaning::Eq(val)))
 	}
 }
 
-impl<Sol, Sat> InspectionActions for Solver<Sat>
+impl<Base, Oracle> From<&Cnf> for Solver<Oracle>
 where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
+	Base: for<'a> From<&'a Cnf> + WithPropagator<Engine, PropSlv = Oracle> + LearnCallback,
+	Oracle: PropagatingSolver<Engine, Slv = Base>,
 {
+	fn from(value: &Cnf) -> Self {
+		let mut slv: Base = value.into();
+		slv.set_learn_callback(Some(trace_learned_clause));
+		let oracle = slv.with_propagator(Engine::default());
+		Self { oracle }
+	}
+}
+
+impl<Oracle: PropagatingSolver<Engine>> InspectionActions for Solver<Oracle> {
 	delegate! {
 		to self.engine().state {
+			fn check_int_in_domain(&self, var: IntView, val: IntVal) -> bool;
+			fn get_int_bounds(&self, var: IntView) -> (IntVal, IntVal);
 			fn get_int_lower_bound(&self, var: IntView) -> IntVal;
 			fn get_int_upper_bound(&self, var: IntView) -> IntVal;
-			fn get_int_bounds(&self, var: IntView) -> (IntVal, IntVal);
 			fn get_int_val(&self, var: IntView) -> Option<IntVal>;
-			fn check_int_in_domain(&self, var: IntView, val: IntVal) -> bool;
 		}
 	}
 }
 
-impl<Sol, Sat> TrailingActions for Solver<Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-{
+impl<Oracle: PropagatingSolver<Engine>> TrailingActions for Solver<Oracle> {
 	delegate! {
 		to self.engine().state {
 			fn get_bool_val(&self, bv: BoolView) -> Option<bool>;
@@ -610,5 +554,14 @@ where
 		to self.engine_mut().state {
 			fn set_trailed_int(&mut self, x: TrailedInt, v: IntVal) -> IntVal;
 		}
+	}
+}
+
+impl<Oracle: fmt::Debug + PropagatingSolver<Engine>> fmt::Debug for Solver<Oracle> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("Solver")
+			.field("oracle", &self.oracle)
+			.field("engine", self.engine())
+			.finish()
 	}
 }

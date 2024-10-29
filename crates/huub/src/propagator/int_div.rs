@@ -252,7 +252,7 @@ impl Poster for IntDivBoundsPoster {
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
-	use pindakaas::{solver::cadical::Cadical, Cnf};
+	use pindakaas::{solver::cadical::PropagatingCadical, Cnf};
 	use rangelist::RangeList;
 	use tracing_test::traced_test;
 
@@ -265,7 +265,7 @@ mod tests {
 	#[test]
 	#[traced_test]
 	fn test_int_div_sat() {
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
 			&mut slv,
 			(-7..=7).into(),

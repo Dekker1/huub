@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use pindakaas::{
-	solver::{PropagatorAccess, Solver as SolverTrait},
-	Valuation as SatValuation, Var as RawVar,
-};
+use pindakaas::{solver::propagation::PropagatingSolver, Var as RawVar};
 use thiserror::Error;
 
 use crate::{
@@ -13,8 +10,8 @@ use crate::{
 		ModelView,
 	},
 	solver::{
+		engine::Engine,
 		view::{BoolView, BoolViewInner, IntViewInner, SolverView},
-		SatSolver,
 	},
 	IntVal, IntView, LitMeaning, Solver,
 };
@@ -103,23 +100,23 @@ impl From<IntVar> for Variable {
 }
 
 impl VariableMap {
-	pub fn get<Sat, Sol>(&self, slv: &mut Solver<Sat>, index: &ModelView) -> SolverView
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
+	pub fn get<Oracle: PropagatingSolver<Engine>>(
+		&self,
+		slv: &mut Solver<Oracle>,
+		index: &ModelView,
+	) -> SolverView {
 		match index {
 			ModelView::Bool(b) => SolverView::Bool(self.get_bool(slv, b)),
 			ModelView::Int(i) => SolverView::Int(self.get_int(slv, i)),
 		}
 	}
 
-	pub fn get_bool<Sat, Sol>(&self, slv: &mut Solver<Sat>, bv: &bool::BoolView) -> BoolView
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
-		let get_int_lit = |slv: &mut Solver<Sat>, iv: &int::IntView, lit_meaning: LitMeaning| {
+	pub fn get_bool<Oracle: PropagatingSolver<Engine>>(
+		&self,
+		slv: &mut Solver<Oracle>,
+		bv: &bool::BoolView,
+	) -> BoolView {
+		let get_int_lit = |slv: &mut Solver<Oracle>, iv: &int::IntView, lit_meaning: LitMeaning| {
 			let iv = self.get_int(slv, iv);
 			slv.get_int_lit(iv, lit_meaning)
 		};
@@ -152,11 +149,11 @@ impl VariableMap {
 		}
 	}
 
-	pub fn get_int<Sat, Sol>(&self, slv: &mut Solver<Sat>, iv: &int::IntView) -> IntView
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
+	pub fn get_int<Oracle: PropagatingSolver<Engine>>(
+		&self,
+		slv: &mut Solver<Oracle>,
+		iv: &int::IntView,
+	) -> IntView {
 		let get_int_var = |v: &IntVar| {
 			let SolverView::Int(i) = self.map.get(&Variable::Int(*v)).cloned().unwrap() else {
 				unreachable!()

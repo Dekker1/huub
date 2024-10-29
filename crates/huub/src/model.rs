@@ -13,9 +13,8 @@ use std::{
 };
 
 use pindakaas::{
-	solver::{cadical::Cadical, NextVarRange, PropagatorAccess, Solver as SolverTrait},
-	ClauseDatabase, Cnf, ConditionalDatabase, Lit as RawLit, Valuation as SatValuation,
-	Var as RawVar,
+	solver::{cadical::Cadical, propagation::PropagatingSolver},
+	ClauseDatabase, Cnf, ConditionalDatabase, Lit as RawLit, Unsatisfiable,
 };
 use rangelist::{IntervalIterator, RangeList};
 use tracing::warn;
@@ -27,9 +26,9 @@ use crate::{
 		int::{IntVar, IntVarDef, IntView},
 		reformulate::{InitConfig, ReformulationError, VariableMap},
 	},
-	solver::{
-		engine::int_var::{EncodingType, IntVar as SlvIntVar},
-		SatSolver,
+	solver::engine::{
+		int_var::{EncodingType, IntVar as SlvIntVar},
+		Engine,
 	},
 	Constraint, Solver,
 };
@@ -46,13 +45,12 @@ pub struct Model {
 
 impl Model {
 	pub fn new_bool_var(&mut self) -> BoolView {
-		BoolView::Lit(self.cnf.new_var().into())
+		BoolView::Lit(self.cnf.new_lit())
 	}
 
 	pub fn new_bool_vars(&mut self, len: usize) -> Vec<BoolView> {
 		self.cnf
-			.next_var_range(len)
-			.unwrap()
+			.new_var_range(len)
 			.map(|v| BoolView::Lit(v.into()))
 			.collect()
 	}
@@ -70,18 +68,19 @@ impl Model {
 		(0..len).map(|i| IntVar(iv.0 + i as u32)).collect()
 	}
 
-	pub fn to_solver<
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol> + 'static,
-	>(
+	pub fn to_solver<Oracle: PropagatingSolver<Engine>>(
 		&mut self,
 		config: &InitConfig,
-	) -> Result<(Solver<Sat>, VariableMap), ReformulationError> {
+	) -> Result<(Solver<Oracle>, VariableMap), ReformulationError>
+	where
+		Solver<Oracle>: for<'a> From<&'a Cnf>,
+		Oracle::Slv: 'static,
+	{
 		let mut map = VariableMap::default();
 
 		// TODO: run SAT simplification
-		let mut slv = Solver::<Sat>::from(&self.cnf);
-		let any_slv: &mut dyn Any = &mut slv.oracle;
+		let mut slv = Solver::<Oracle>::from(&self.cnf);
+		let any_slv: &mut dyn Any = slv.oracle.solver_mut();
 		if let Some(r) = any_slv.downcast_mut::<Cadical>() {
 			r.set_option("restart", config.restart() as i32);
 			r.set_option("vivify", config.vivification() as i32);
@@ -180,11 +179,11 @@ impl AddAssign<Branching> for Model {
 }
 
 impl ClauseDatabase for Model {
-	fn new_var(&mut self) -> RawVar {
-		self.cnf.new_var()
+	fn new_var_range(&mut self, len: usize) -> pindakaas::VarRange {
+		self.cnf.new_var_range(len)
 	}
 
-	fn add_clause<I: IntoIterator<Item = RawLit>>(&mut self, cl: I) -> pindakaas::Result {
+	fn add_clause<I: IntoIterator<Item = RawLit>>(&mut self, cl: I) -> Result<(), Unsatisfiable> {
 		self.cnf.add_clause(cl)
 	}
 

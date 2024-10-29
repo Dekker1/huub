@@ -1,8 +1,9 @@
 use std::{iter::once, ops::Not};
 
 use pindakaas::{
-	solver::{PropagatorAccess, Solver as SolverTrait},
-	Formula, Lit as RawLit, TseitinEncoder, Valuation as SatValuation,
+	propositional_logic::{Formula, TseitinEncoder},
+	solver::propagation::PropagatingSolver,
+	Lit as RawLit,
 };
 
 use crate::{
@@ -11,8 +12,8 @@ use crate::{
 		reformulate::{ReformulationError, VariableMap},
 	},
 	solver::{
+		engine::Engine,
 		view::{self, BoolViewInner},
-		SatSolver,
 	},
 	IntVal, Solver,
 };
@@ -34,15 +35,11 @@ pub enum BoolExpr {
 }
 
 impl BoolExpr {
-	pub(crate) fn constrain<Sol, Sat>(
+	pub(crate) fn constrain<Oracle: PropagatingSolver<Engine>>(
 		&self,
-		slv: &mut Solver<Sat>,
+		slv: &mut Solver<Oracle>,
 		map: &mut VariableMap,
-	) -> Result<(), ReformulationError>
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
+	) -> Result<(), ReformulationError> {
 		match self {
 			BoolExpr::View(bv) => {
 				let v = map.get_bool(slv, bv);
@@ -163,17 +160,13 @@ impl BoolExpr {
 		}
 	}
 
-	pub(crate) fn to_arg<Sol, Sat>(
+	pub(crate) fn to_arg<Oracle: PropagatingSolver<Engine>>(
 		&self,
-		slv: &mut Solver<Sat>,
+		slv: &mut Solver<Oracle>,
 		map: &mut VariableMap,
 		name: Option<RawLit>,
-	) -> Result<view::BoolView, ReformulationError>
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
-		let bind_lit = |oracle: &mut Sat, lit| {
+	) -> Result<view::BoolView, ReformulationError> {
+		let bind_lit = |oracle: &mut Oracle, lit| {
 			Ok(view::BoolView(BoolViewInner::Lit(
 				if let Some(name) = name {
 					oracle
@@ -188,7 +181,7 @@ impl BoolExpr {
 				},
 			)))
 		};
-		let bind_const = |oracle: &mut Sat, val| {
+		let bind_const = |oracle: &mut Oracle, val| {
 			if let Some(name) = name {
 				oracle
 					.add_clause([if val { name } else { !name }])
@@ -196,7 +189,7 @@ impl BoolExpr {
 			}
 			Ok(view::BoolView(BoolViewInner::Const(val)))
 		};
-		let bind_view = |oracle: &mut Sat, view: view::BoolView| match view.0 {
+		let bind_view = |oracle: &mut Oracle, view: view::BoolView| match view.0 {
 			BoolViewInner::Lit(l) => bind_lit(oracle, l),
 			BoolViewInner::Const(c) => bind_const(oracle, c),
 		};
@@ -222,7 +215,7 @@ impl BoolExpr {
 						BoolViewInner::Lit(l) => lits.push(Formula::Atom(l)),
 					}
 				}
-				let r = name.unwrap_or_else(|| slv.oracle.new_var().into());
+				let r = name.unwrap_or_else(|| slv.oracle.new_lit());
 				slv.oracle
 					.encode(
 						&Formula::Equiv(vec![Formula::Atom(r), Formula::Or(lits)]),
@@ -240,7 +233,7 @@ impl BoolExpr {
 						BoolViewInner::Lit(l) => lits.push(Formula::Atom(l)),
 					}
 				}
-				let name = name.unwrap_or_else(|| slv.oracle.new_var().into());
+				let name = name.unwrap_or_else(|| slv.oracle.new_lit());
 				slv.oracle
 					.encode(
 						&Formula::Equiv(vec![Formula::Atom(name), Formula::And(lits)]),
@@ -261,7 +254,7 @@ impl BoolExpr {
 					BoolViewInner::Const(true) => bind_const(&mut slv.oracle, true),
 					BoolViewInner::Const(false) => bind_lit(&mut slv.oracle, !a),
 					BoolViewInner::Lit(b) => {
-						let name = name.unwrap_or_else(|| slv.oracle.new_var().into());
+						let name = name.unwrap_or_else(|| slv.oracle.new_lit());
 						slv.oracle
 							.encode(
 								&Formula::Equiv(vec![
@@ -293,7 +286,7 @@ impl BoolExpr {
 						BoolViewInner::Lit(l) => lits.push(Formula::Atom(l)),
 					}
 				}
-				let name = name.unwrap_or_else(|| slv.oracle.new_var().into());
+				let name = name.unwrap_or_else(|| slv.oracle.new_lit());
 				let f = match res {
 					Some(b) => {
 						Formula::And(lits.into_iter().map(|e| if b { e } else { !e }).collect())
@@ -318,7 +311,7 @@ impl BoolExpr {
 						BoolViewInner::Lit(l) => lits.push(Formula::Atom(l)),
 					}
 				}
-				let name = name.unwrap_or_else(|| slv.oracle.new_var().into());
+				let name = name.unwrap_or_else(|| slv.oracle.new_lit());
 				let mut formula = Formula::Xor(lits);
 				if count % 2 == 1 {
 					formula = !formula;

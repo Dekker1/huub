@@ -1,8 +1,5 @@
 use delegate::delegate;
-use pindakaas::{
-	solver::{PropagatingSolver, PropagatorAccess, Solver as SolverTrait},
-	Valuation as SatValuation,
-};
+use pindakaas::solver::propagation::PropagatingSolver;
 
 use crate::{
 	actions::{
@@ -10,9 +7,10 @@ use crate::{
 		inspection::InspectionActions, trailing::TrailingActions,
 	},
 	solver::{
-		engine::{activation_list::IntPropCond, int_var::IntVarRef, trail::TrailedInt, PropRef},
+		engine::{
+			activation_list::IntPropCond, int_var::IntVarRef, trail::TrailedInt, Engine, PropRef,
+		},
 		view::{BoolViewInner, IntViewInner},
-		SatSolver,
 	},
 	BoolView, IntVal, IntView, LitMeaning, Solver,
 };
@@ -25,18 +23,13 @@ pub(crate) enum InitRef {
 	Propagator(PropRef),
 }
 
-pub(crate) struct InitializationContext<'a, Sat: SatSolver + 'a>
-where
-	<Sat as SolverTrait>::ValueFn: PropagatorAccess,
-{
+pub(crate) struct InitializationContext<'a, Oracle: 'a> {
 	pub(crate) init_ref: InitRef,
-	pub(crate) slv: &'a mut Solver<Sat>,
+	pub(crate) slv: &'a mut Solver<Oracle>,
 }
 
-impl<'a, Sol, Sat> InitializationActions for InitializationContext<'a, Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
+impl<'a, Oracle: PropagatingSolver<Engine>> InitializationActions
+	for InitializationContext<'a, Oracle>
 {
 	fn add_clause<I: IntoIterator<Item = BoolView>>(
 		&mut self,
@@ -53,7 +46,7 @@ where
 		match var.0 {
 			BoolViewInner::Lit(lit) => {
 				self.slv.engine_mut().state.trail.grow_to_boolvar(lit.var());
-				<Sat as PropagatingSolver>::add_observed_var(&mut self.slv.oracle, lit.var());
+				self.slv.oracle.add_observed_var(lit.var());
 				if let InitRef::Propagator(prop) = self.init_ref {
 					self.slv
 						.engine_mut()
@@ -97,11 +90,7 @@ where
 	}
 }
 
-impl<'a, Sol, Sat> TrailingActions for InitializationContext<'a, Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-{
+impl<'a, Oracle: PropagatingSolver<Engine>> TrailingActions for InitializationContext<'a, Oracle> {
 	delegate! {
 		to self.slv.engine().state {
 			fn get_bool_val(&self, bv: BoolView) -> Option<bool>;
@@ -113,10 +102,8 @@ where
 	}
 }
 
-impl<'a, Sol, Sat> InspectionActions for InitializationContext<'a, Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
+impl<'a, Oracle: PropagatingSolver<Engine>> InspectionActions
+	for InitializationContext<'a, Oracle>
 {
 	delegate! {
 		to self.slv.engine().state {
@@ -129,11 +116,7 @@ where
 	}
 }
 
-impl<'a, Sol, Sat> DecisionActions for InitializationContext<'a, Sat>
-where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-{
+impl<'a, Oracle: PropagatingSolver<Engine>> DecisionActions for InitializationContext<'a, Oracle> {
 	delegate! {
 		to self.slv {
 			fn get_intref_lit(&mut self, var: IntVarRef, meaning: LitMeaning) -> BoolView;

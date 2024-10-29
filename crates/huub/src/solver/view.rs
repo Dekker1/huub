@@ -3,17 +3,16 @@ use std::{
 	ops::{Add, Mul, Neg, Not},
 };
 
-use pindakaas::{
-	solver::{PropagatorAccess, Solver as SolverTrait},
-	Lit as RawLit, Valuation as SatValuation,
-};
+use pindakaas::{solver::propagation::PropagatingSolver, Lit as RawLit};
 
 use crate::{
 	helpers::linear_transform::LinearTransform,
 	solver::{
-		engine::int_var::{DirectStorage, IntVarRef, LitMeaning, OrderStorage},
+		engine::{
+			int_var::{DirectStorage, IntVarRef, LitMeaning, OrderStorage},
+			Engine,
+		},
 		value::NonZeroIntVal,
-		SatSolver,
 	},
 	IntVal, Solver,
 };
@@ -95,11 +94,10 @@ impl From<bool> for BoolView {
 pub struct IntView(pub(crate) IntViewInner);
 
 impl IntView {
-	pub fn lit_reverse_map_info<Sol, Sat>(&self, slv: &Solver<Sat>) -> Vec<(NonZeroI32, LitMeaning)>
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
+	pub fn lit_reverse_map_info<Oracle: PropagatingSolver<Engine>>(
+		&self,
+		slv: &Solver<Oracle>,
+	) -> Vec<(NonZeroI32, LitMeaning)> {
 		let transformer = match self.0 {
 			IntViewInner::Bool { transformer, .. } | IntViewInner::Linear { transformer, .. } => {
 				transformer

@@ -37,8 +37,8 @@ pub type NonZeroIntVal = NonZeroI64;
 
 pub type IntSetVal = RangeList<IntVal>;
 
-pub trait Valuation: Fn(SolverView) -> Option<Value> {}
-impl<F: Fn(SolverView) -> Option<Value>> Valuation for F {}
+pub trait Valuation: Fn(SolverView) -> Value {}
+impl<F: Fn(SolverView) -> Value> Valuation for F {}
 
 impl Display for Value {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -46,7 +46,7 @@ impl Solver {
 		let status = self.all_solutions(&vars, |value| {
 			let mut soln = Vec::with_capacity(vars.len());
 			for var in &vars {
-				soln.push(value(*var).unwrap());
+				soln.push(value(*var));
 			}
 			assert!(pred(&soln));
 		});

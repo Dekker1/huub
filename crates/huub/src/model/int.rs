@@ -1,28 +1,21 @@
 use std::ops::{Add, Mul, Neg};
 
-use pindakaas::{
-	solver::{PropagatorAccess, Solver as SolverTrait},
-	ClauseDatabase, Valuation as SatValuation,
-};
+use pindakaas::{solver::propagation::PropagatingSolver, ClauseDatabase};
 use rangelist::{IntervalIterator, RangeList};
 
 use crate::{
 	helpers::linear_transform::LinearTransform,
 	model::{bool::BoolView, reformulate::VariableMap},
-	solver::{view, SatSolver},
+	solver::{engine::Engine, view},
 	IntVal, LitMeaning, Model, NonZeroIntVal, ReformulationError, Solver,
 };
 
 impl IntView {
-	pub(crate) fn to_arg<Sol, Sat>(
+	pub(crate) fn to_arg<Oracle: PropagatingSolver<Engine>>(
 		&self,
-		slv: &mut Solver<Sat>,
+		slv: &mut Solver<Oracle>,
 		map: &mut VariableMap,
-	) -> view::IntView
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
+	) -> view::IntView {
 		map.get_int(slv, self)
 	}
 }

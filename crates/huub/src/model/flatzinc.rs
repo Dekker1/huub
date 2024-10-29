@@ -12,10 +12,7 @@ use flatzinc_serde::{
 	Literal, Type,
 };
 use itertools::Itertools;
-use pindakaas::{
-	solver::{PropagatorAccess, Solver as SolverTrait},
-	Valuation as SatValuation,
-};
+use pindakaas::{solver::propagation::PropagatingSolver, Cnf};
 use rangelist::{IntervalIterator, RangeList};
 use thiserror::Error;
 use tracing::warn;
@@ -28,7 +25,7 @@ use crate::{
 		reformulate::ReformulationError,
 		ModelView,
 	},
-	solver::SatSolver,
+	solver::engine::Engine,
 	BoolExpr, Constraint, InitConfig, IntSetVal, IntVal, Model, NonZeroIntVal, Solver, SolverView,
 };
 
@@ -1511,10 +1508,10 @@ impl Model {
 	}
 }
 
-impl<Sol, Sat> Solver<Sat>
+impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle>
 where
-	Sol: PropagatorAccess + SatValuation,
-	Sat: SatSolver + SolverTrait<ValueFn = Sol> + 'static,
+	Solver<Oracle>: for<'a> From<&'a Cnf>,
+	Oracle::Slv: 'static,
 {
 	pub fn from_fzn<S>(
 		fzn: &FlatZinc<S>,

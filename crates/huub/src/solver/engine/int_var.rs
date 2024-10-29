@@ -9,17 +9,17 @@ use std::{
 
 use itertools::Itertools;
 use pindakaas::{
-	solver::{PropagatingSolver, PropagatorAccess, Solver as SolverTrait, VarRange},
-	Lit as RawLit, Valuation as SatValuation, Var as RawVar,
+	solver::propagation::PropagatingSolver, Lit as RawLit, Valuation as SatValuation,
+	Var as RawVar, VarRange,
 };
 use rangelist::RangeList;
 
 use crate::{
 	actions::trailing::TrailingActions,
 	solver::{
-		engine::trail::TrailedInt,
+		engine::{trail::TrailedInt, Engine},
 		view::{BoolViewInner, IntViewInner},
-		IntView, SatSolver,
+		IntView,
 	},
 	BoolView, Clause, IntVal, LinearTransform, NonZeroIntVal, Solver,
 };
@@ -62,16 +62,12 @@ pub(crate) struct IntVar {
 }
 
 impl IntVar {
-	pub(crate) fn new_in<Sol, Sat>(
-		slv: &mut Solver<Sat>,
+	pub(crate) fn new_in<Oracle: PropagatingSolver<Engine>>(
+		slv: &mut Solver<Oracle>,
 		domain: RangeList<IntVal>,
 		order_encoding: EncodingType,
 		direct_encoding: EncodingType,
-	) -> IntView
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
+	) -> IntView {
 		let orig_domain_len: usize = domain
 			.iter()
 			.map(|x| (x.end() - x.start() + 1) as usize)
@@ -86,7 +82,7 @@ impl IntVar {
 		let lb = *domain.lower_bound().unwrap();
 		let ub = *domain.upper_bound().unwrap();
 		if orig_domain_len == 2 {
-			let lit = slv.oracle.new_var().into();
+			let lit = slv.oracle.new_lit();
 			return IntView(IntViewInner::Bool {
 				transformer: LinearTransform {
 					scale: NonZeroIntVal::new(ub - lb).unwrap(),
@@ -103,10 +99,7 @@ impl IntVar {
 		let order_encoding = match order_encoding {
 			EncodingType::Eager => OrderStorage::Eager {
 				lower_bound: slv.engine_mut().state.trail.track_int(lb),
-				storage: slv
-					.oracle
-					.next_var_range(orig_domain_len - 1)
-					.expect("Boolean variable pool exhausted"),
+				storage: slv.oracle.new_var_range(orig_domain_len - 1),
 			},
 			EncodingType::Lazy => OrderStorage::Lazy(LazyOrderStorage {
 				min_index: 0,
@@ -117,11 +110,9 @@ impl IntVar {
 			}),
 		};
 		let direct_encoding = match direct_encoding {
-			EncodingType::Eager => DirectStorage::Eager(
-				slv.oracle
-					.next_var_range(orig_domain_len - 2)
-					.expect("Boolean variable pool exhausted"),
-			),
+			EncodingType::Eager => {
+				DirectStorage::Eager(slv.oracle.new_var_range(orig_domain_len - 2))
+			}
 			EncodingType::Lazy => DirectStorage::Lazy(HashMap::default()),
 		};
 
@@ -180,7 +171,7 @@ impl IntVar {
 				.trail
 				.grow_to_boolvar(vars.clone().last().unwrap());
 			for l in vars {
-				<Sat as PropagatingSolver>::add_observed_var(&mut slv.oracle, l);
+				slv.oracle.add_observed_var(l);
 			}
 		}
 
@@ -389,11 +380,10 @@ impl IntVar {
 				let mut val_iter = self.domain.clone().into_iter().flatten();
 				for l in storage.clone() {
 					match model.value(l.into()) {
-						Some(false) => return val_iter.next().unwrap(),
-						Some(true) => {
+						false => return val_iter.next().unwrap(),
+						true => {
 							let _ = val_iter.next();
 						}
-						None => unreachable!(),
 					}
 				}
 				*self.domain.upper_bound().unwrap()
@@ -404,7 +394,7 @@ impl IntVar {
 					return last_val;
 				}
 				let mut i = storage.min_index as usize;
-				while model.value(storage.storage[i].var.into()).unwrap() {
+				while model.value(storage.storage[i].var.into()) {
 					last_val = storage.storage[i].val;
 					if !storage.storage[i].has_next {
 						break;
@@ -1183,7 +1173,7 @@ impl Not for LitMeaning {
 
 #[cfg(test)]
 mod tests {
-	use pindakaas::{solver::cadical::Cadical, Cnf};
+	use pindakaas::{solver::cadical::PropagatingCadical, Cnf};
 	use rangelist::RangeList;
 
 	use crate::{
@@ -1203,7 +1193,7 @@ mod tests {
 				unreachable!()
 			}
 		};
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
 			&mut slv,
 			RangeList::from(1..=4),
@@ -1233,7 +1223,7 @@ mod tests {
 		let lit = a.get_bool_lit(LitMeaning::Eq(4)).unwrap();
 		assert_eq!(get_lit(lit), 3);
 
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
 			&mut slv,
 			RangeList::from_iter([1..=3, 8..=10]),

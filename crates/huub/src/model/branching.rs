@@ -1,12 +1,9 @@
-use pindakaas::{
-	solver::{PropagatorAccess, Solver as SolverTrait},
-	Valuation as SatValuation,
-};
+use pindakaas::solver::propagation::PropagatingSolver;
 
 use crate::{
 	brancher::{BoolBrancher, IntBrancher, WarmStartBrancher},
 	model::{bool::BoolView, int::IntView, reformulate::VariableMap},
-	solver::SatSolver,
+	solver::engine::Engine,
 	Solver,
 };
 
@@ -36,11 +33,11 @@ pub enum Branching {
 }
 
 impl Branching {
-	pub(crate) fn to_solver<Sol, Sat>(&self, slv: &mut Solver<Sat>, map: &mut VariableMap)
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
+	pub(crate) fn to_solver<Oracle: PropagatingSolver<Engine>>(
+		&self,
+		slv: &mut Solver<Oracle>,
+		map: &mut VariableMap,
+	) {
 		match self {
 			Branching::Bool(vars, var_sel, val_sel) => {
 				let vars = vars.iter().map(|v| map.get_bool(slv, v)).collect();

@@ -17,7 +17,7 @@ use std::{
 use flatzinc_serde::{FlatZinc, Literal, Method};
 use huub::{
 	FlatZincError, FlatZincStatistics, Goal, InitConfig, LitMeaning, ReformulationError,
-	SlvTermSignal, SolveResult, Solver, SolverView, Valuation,
+	SlvTermSignal, SolveResult, Solver, SolverView, Valuation, Value,
 };
 use pico_args::Arguments;
 use tracing::{subscriber::set_default, warn};
@@ -342,7 +342,7 @@ where
 					warn!("--all-solutions is ignored when optimizing, use --intermediate-solutions or --all-optimal instead");
 				}
 				let mut no_good_vals = vec![
-					None;
+					Value::Bool(false);
 					if self.all_optimal {
 						output_vars.len()
 					} else {
@@ -608,7 +608,7 @@ impl Solution<'_> {
 			Literal::Int(i) => format!("{i}"),
 			Literal::Float(f) => format!("{f}"),
 			Literal::Identifier(ident) => {
-				format!("{}", (self.value)(self.var_map[ident]).unwrap())
+				format!("{}", (self.value)(self.var_map[ident]))
 			}
 			Literal::Bool(b) => format!("{b}"),
 			Literal::IntSet(is) => is
@@ -640,11 +640,7 @@ impl Display for Solution<'_> {
 						.join(",")
 				)?;
 			} else {
-				writeln!(
-					f,
-					"{ident} = {};",
-					(self.value)(self.var_map[ident]).unwrap()
-				)?;
+				writeln!(f, "{ident} = {};", (self.value)(self.var_map[ident]))?;
 			}
 		}
 		writeln!(f, "{}", FZN_SEPERATOR)

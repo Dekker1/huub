@@ -1,10 +1,7 @@
 use std::iter::once;
 
 use itertools::Itertools;
-use pindakaas::{
-	solver::{PropagatorAccess, Solver as SolverTrait},
-	Valuation as SatValuation,
-};
+use pindakaas::solver::propagation::PropagatingSolver;
 use rangelist::RangeList;
 
 use crate::{
@@ -24,8 +21,8 @@ use crate::{
 		int_times::IntTimesBounds,
 	},
 	solver::{
+		engine::Engine,
 		view::{BoolViewInner, IntViewInner},
-		SatSolver,
 	},
 	BoolExpr, IntSetVal, IntVal, LitMeaning, Model, NonZeroIntVal, ReformulationError, Solver,
 };
@@ -57,15 +54,11 @@ pub enum Constraint {
 }
 
 impl Constraint {
-	pub(crate) fn to_solver<Sol, Sat>(
+	pub(crate) fn to_solver<Oracle: PropagatingSolver<Engine>>(
 		&self,
-		slv: &mut Solver<Sat>,
+		slv: &mut Solver<Oracle>,
 		map: &mut VariableMap,
-	) -> Result<(), ReformulationError>
-	where
-		Sol: PropagatorAccess + SatValuation,
-		Sat: SatSolver + SolverTrait<ValueFn = Sol>,
-	{
+	) -> Result<(), ReformulationError> {
 		match self {
 			Constraint::AllDifferentInt(v) => {
 				let vars: Vec<_> = v.iter().map(|v| v.to_arg(slv, map)).collect();

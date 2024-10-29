@@ -1,6 +1,6 @@
 use delegate::delegate;
 use index_vec::IndexVec;
-use pindakaas::{solver::SolvingActions, Lit as RawLit};
+use pindakaas::{solver::propagation::SolvingActions, Lit as RawLit};
 use tracing::trace;
 
 use crate::{
@@ -153,7 +153,6 @@ impl DecisionActions for SolvingContext<'_> {
 			let v = self.slv.new_var();
 			self.state.trail.grow_to_boolvar(v);
 			trace_new_lit!(iv, def, v);
-			self.slv.add_observed_var(v);
 			self.state
 				.bool_to_int
 				.insert_lazy(v, iv, def.meaning.clone());

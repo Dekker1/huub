@@ -315,7 +315,7 @@ fn pow(base: IntVal, exponent: IntVal) -> Option<IntVal> {
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
-	use pindakaas::{solver::cadical::Cadical, Cnf};
+	use pindakaas::{solver::cadical::PropagatingCadical, Cnf};
 	use tracing_test::traced_test;
 
 	use crate::{
@@ -327,7 +327,7 @@ mod tests {
 	#[test]
 	#[traced_test]
 	fn test_int_pow_sat() {
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
 			&mut slv,
 			(-2..=3).into(),

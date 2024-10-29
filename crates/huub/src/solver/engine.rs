@@ -6,7 +6,6 @@ pub(crate) mod solving_context;
 pub(crate) mod trail;
 
 use std::{
-	any::Any,
 	collections::{HashMap, VecDeque},
 	mem,
 };
@@ -14,7 +13,7 @@ use std::{
 use delegate::delegate;
 use index_vec::IndexVec;
 use pindakaas::{
-	solver::{
+	solver::propagation::{
 		ClausePersistence, Propagator as PropagatorExtension, SearchDecision, SolvingActions,
 	},
 	Lit as RawLit, Var as RawVar,
@@ -63,7 +62,7 @@ macro_rules! trace_new_lit {
 pub(crate) use trace_new_lit;
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct Engine {
+pub struct Engine {
 	/// Storage of the propagators
 	pub(crate) propagators: IndexVec<PropRef, BoxedPropagator>,
 	/// Storage of the branchers
@@ -279,7 +278,7 @@ impl PropagatorExtension for Engine {
 	}
 
 	#[tracing::instrument(level = "debug", skip(self, slv, model))]
-	fn check_model(
+	fn check_solution(
 		&mut self,
 		slv: &mut dyn SolvingActions,
 		model: &dyn pindakaas::Valuation,
@@ -363,13 +362,6 @@ impl PropagatorExtension for Engine {
 		} else {
 			None
 		}
-	}
-
-	fn as_any(&self) -> &dyn Any {
-		self
-	}
-	fn as_mut_any(&mut self) -> &mut dyn Any {
-		self
 	}
 }
 

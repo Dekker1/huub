@@ -361,7 +361,7 @@ impl TrailEvent {
 
 #[cfg(test)]
 mod tests {
-	use pindakaas::solver::{cadical::Cadical, NextVarRange};
+	use pindakaas::{solver::cadical::Cadical, ClauseDatabase};
 
 	use crate::{
 		solver::engine::trail::{Trail, TrailEvent},
@@ -372,7 +372,7 @@ mod tests {
 	fn test_trail_event() {
 		let mut slv = Cadical::default();
 		let mut trail = Trail::default();
-		let lits = slv.next_var_range(10).unwrap();
+		let lits = slv.new_var_range(10);
 		trail.grow_to_boolvar(lits.clone().end());
 		let int_events: Vec<_> = [
 			0,

@@ -84,7 +84,7 @@ impl Poster for AllDifferentIntValuePoster {
 #[cfg(test)]
 mod tests {
 	use itertools::Itertools;
-	use pindakaas::{solver::cadical::Cadical, Cnf};
+	use pindakaas::{solver::cadical::PropagatingCadical, Cnf};
 	use rangelist::RangeList;
 	use tracing_test::traced_test;
 
@@ -97,7 +97,7 @@ mod tests {
 	#[test]
 	#[traced_test]
 	fn test_all_different_value_sat() {
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
 			&mut slv,
 			RangeList::from_iter([1..=4]),
@@ -125,7 +125,7 @@ mod tests {
 	#[test]
 	#[traced_test]
 	fn test_all_different_value_unsat() {
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
 			&mut slv,
 			RangeList::from_iter([1..=2]),
@@ -151,7 +151,7 @@ mod tests {
 	}
 
 	fn test_sudoku(grid: &[&str], expected: SolveResult) {
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let mut all_vars = vec![];
 		// create variables and add all different propagator for each row
 		grid.iter().for_each(|row| {
@@ -195,10 +195,7 @@ mod tests {
 		assert_eq!(
 			slv.solve(|val| {
 				(0..9).for_each(|r| {
-					let row = all_vars[r]
-						.iter()
-						.map(|v| val(v.into()).unwrap())
-						.collect_vec();
+					let row = all_vars[r].iter().map(|v| val(v.into())).collect_vec();
 					assert!(
 						row.iter().all_unique(),
 						"Values in row {} are not all different: {:?}",
@@ -207,10 +204,7 @@ mod tests {
 					);
 				});
 				(0..9).for_each(|c| {
-					let col = all_vars
-						.iter()
-						.map(|row| val(row[c].into()).unwrap())
-						.collect_vec();
+					let col = all_vars.iter().map(|row| val(row[c].into())).collect_vec();
 					assert!(
 						col.iter().all_unique(),
 						"Values in column {} are not all different: {:?}",
@@ -222,7 +216,7 @@ mod tests {
 					(0..3).for_each(|j| {
 						let block = (0..3)
 							.flat_map(|x| (0..3).map(move |y| (x, y)))
-							.map(|(x, y)| val(all_vars[3 * i + x][3 * j + y].into()).unwrap())
+							.map(|(x, y)| val(all_vars[3 * i + x][3 * j + y].into()))
 							.collect_vec();
 						assert!(
 							block.iter().all_unique(),

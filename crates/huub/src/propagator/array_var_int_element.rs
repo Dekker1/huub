@@ -239,7 +239,7 @@ impl Poster for ArrayVarIntElementBoundsPoster {
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
-	use pindakaas::{solver::cadical::Cadical, Cnf};
+	use pindakaas::{solver::cadical::PropagatingCadical, Cnf};
 	use rangelist::RangeList;
 	use tracing_test::traced_test;
 
@@ -252,7 +252,7 @@ mod tests {
 	#[test]
 	#[traced_test]
 	fn test_element_bounds_sat() {
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
 			&mut slv,
 			RangeList::from_iter([3..=4]),
@@ -325,7 +325,7 @@ mod tests {
 	#[test]
 	#[traced_test]
 	fn test_element_holes() {
-		let mut slv = Solver::<Cadical>::from(&Cnf::default());
+		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
 			&mut slv,
 			RangeList::from_iter([1..=3]),

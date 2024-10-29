@@ -17,10 +17,10 @@ use crate::solver::engine::PropRef;
 /// of the Bound condition to the end of the list.
 pub(crate) struct ActivationList {
 	activations: Vec<PropRef>,
-	lower_bound_idx: u16,
-	upper_bound_idx: u16,
-	bounds_idx: u16,
-	domain_idx: u16,
+	lower_bound_idx: u32,
+	upper_bound_idx: u32,
+	bounds_idx: u32,
+	domain_idx: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,9 +65,8 @@ impl ActivationList {
 	/// Add a propagator to the list of propagators to be enqueued based on the
 	/// given condition.
 	pub(crate) fn add(&mut self, mut prop: PropRef, condition: IntPropCond) {
-		assert!(self.activations.len() < u16::MAX as usize, "Unable to add more than u16::MAX propagators to the activation list of a single variable.");
-		// TODO: Optimize insertion using swapping
-		let mut cond_swap = |idx: u16| {
+		assert!(self.activations.len() < u32::MAX as usize, "Unable to add more than u32::MAX propagators to the activation list of a single variable.");
+		let mut cond_swap = |idx: u32| {
 			let idx = idx as usize;
 			if idx < self.activations.len() {
 				mem::swap(&mut prop, &mut self.activations[idx]);

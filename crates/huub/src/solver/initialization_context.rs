@@ -54,7 +54,7 @@ impl<'a, Oracle: PropagatingSolver<Engine>> InitializationActions
 						.bool_activation
 						.entry(lit.var())
 						.or_default()
-						.push(prop);
+						.add(prop);
 				}
 			}
 			BoolViewInner::Const(_) => {}
@@ -87,6 +87,69 @@ impl<'a, Oracle: PropagatingSolver<Engine>> InitializationActions
 			}
 			(InitRef::Brancher, _) => {} // ignore: branchers don't receive notifications, and contained literals are already observed.
 		}
+	}
+
+	fn enqueue_when_n_fixed(&mut self, mut n: usize, bool_vars: &[BoolView], int_vars: &[IntView]) {
+		let InitRef::Propagator(prop) = self.init_ref else {
+			panic!("enqueue_when_n_fixed can only be called for propagators")
+		};
+		assert!(
+			n <= bool_vars.len() + int_vars.len(),
+			"waiting on more fixed events than there are variables"
+		);
+		assert!(
+			!self
+				.slv
+				.engine_mut()
+				.state
+				.fixed_daemons
+				.contains_key(&prop),
+			"propagator is already waiting on fixed events"
+		);
+
+		// Filter constants and extract variable references
+		let mut lits = Vec::new();
+		let mut ints = Vec::new();
+		for bv in bool_vars {
+			match bv.0 {
+				BoolViewInner::Lit(lit) => lits.push(lit),
+				BoolViewInner::Const(_) => n -= 1,
+			}
+		}
+		for iv in int_vars {
+			match iv.0 {
+				IntViewInner::Bool { lit, .. } => lits.push(lit),
+				IntViewInner::Const(_) => n -= 1,
+				IntViewInner::Linear { var, .. } | IntViewInner::VarRef(var) => ints.push(var),
+			}
+		}
+
+		if n <= 0 {
+			todo!("immediately enqueue the propagator")
+		}
+
+		for lit in lits {
+			self.slv.engine_mut().state.trail.grow_to_boolvar(lit.var());
+			self.slv.oracle.add_observed_var(lit.var());
+			self.slv
+				.engine_mut()
+				.state
+				.bool_activation
+				.entry(lit.var())
+				.or_default()
+				.add_fixed_daemon(prop);
+		}
+		for var in ints {
+			self.slv.engine_mut().state.int_activation[var].add_fixed_daemon(prop)
+		}
+
+		let count = self.slv.engine_mut().state.trail.track_int(n as i64);
+		let _ = self
+			.slv
+			.engine_mut()
+			.state
+			.fixed_daemons
+			.insert(prop, count);
 	}
 }
 

@@ -29,7 +29,7 @@ use crate::{
 	propagator::reason::Reason,
 	solver::{
 		engine::{
-			activation_list::{ActivationList, IntEvent},
+			activation_list::{BoolActivationList, IntActivationList, IntEvent},
 			bool_to_int::BoolToIntMap,
 			int_var::{IntVar, IntVarRef, LitMeaning, OrderStorage},
 			queue::{PriorityLevel, PriorityQueue},
@@ -122,9 +122,14 @@ pub(crate) struct State {
 
 	// ---- Queueing Infrastructure ----
 	/// Boolean variable enqueueing information
-	pub(crate) bool_activation: HashMap<RawVar, Vec<PropRef>>,
+	pub(crate) bool_activation: HashMap<RawVar, BoolActivationList>,
 	/// Integer variable enqueueing information
-	pub(crate) int_activation: IndexVec<IntVarRef, ActivationList>,
+	pub(crate) int_activation: IndexVec<IntVarRef, IntActivationList>,
+	/// Fixed Deamons
+	///
+	/// These are propagators that are enqueued when set number of values have been
+	/// assigned.
+	pub(crate) fixed_daemons: HashMap<PropRef, TrailedInt>,
 	/// Queue of propagators awaiting action
 	pub(crate) propagator_queue: PriorityQueue<PropRef>,
 	/// Priority within the queue for each propagator
@@ -564,14 +569,42 @@ impl State {
 				self.enqueued[prop] = true;
 			}
 		}
+		if event == IntEvent::Fixed {
+			for prop in self.int_activation[int_var].fixed_daemons() {
+				let counter = self.fixed_daemons[&prop];
+				let count = self.trail.get_trailed_int(counter) - 1;
+				let _ = self.trail.set_trailed_int(counter, count);
+				if count <= 0 && !self.enqueued[prop] {
+					self.propagator_queue
+						.insert(self.propagator_priority[prop], prop);
+					self.enqueued[prop] = true;
+				}
+			}
+		}
 	}
 
 	fn enqueue_propagators(&mut self, lit: RawLit, skip: Option<PropRef>) {
-		for &prop in self.bool_activation.get(&lit.var()).into_iter().flatten() {
-			if Some(prop) != skip && !self.enqueued[prop] {
-				self.propagator_queue
-					.insert(self.propagator_priority[prop], prop);
-				self.enqueued[prop] = true;
+		if let Some(activator) = self.bool_activation.get(&lit.var()) {
+			// Enqueue all propagators that are directly activated by the given literal
+			for prop in activator.activations() {
+				if Some(prop) != skip && !self.enqueued[prop] {
+					self.propagator_queue
+						.insert(self.propagator_priority[prop], prop);
+					self.enqueued[prop] = true;
+				}
+			}
+
+			// Decrease all fixed daemons that are associated with the given literal and
+			// activate them if they are now zero
+			for prop in activator.fixed_daemons() {
+				let counter = self.fixed_daemons[&prop];
+				let count = self.trail.get_trailed_int(counter) - 1;
+				let _ = self.trail.set_trailed_int(counter, count);
+				if count <= 0 && !self.enqueued[prop] {
+					self.propagator_queue
+						.insert(self.propagator_priority[prop], prop);
+					self.enqueued[prop] = true;
+				}
 			}
 		}
 

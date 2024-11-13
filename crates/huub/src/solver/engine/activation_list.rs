@@ -5,6 +5,14 @@ use crate::solver::engine::PropRef;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// A data structure that store a list of propagators to be enqueued based on
 /// different propagation conditions.
+pub(crate) struct BoolActivationList {
+	activations: Vec<PropRef>,
+	fixed_daemons: Vec<PropRef>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// A data structure that store a list of propagators to be enqueued based on
+/// different propagation conditions.
 ///
 /// The list is sorted in the following order of propagation condition:
 /// Fixed, LowerBound, UpperBound, Bound, Domain.
@@ -15,12 +23,13 @@ use crate::solver::engine::PropRef;
 /// index of the LowerBound condition, enqueue all propagators untill the
 /// beginning of the UpperBound condition, and then continue from the beginning
 /// of the Bound condition to the end of the list.
-pub(crate) struct ActivationList {
+pub(crate) struct IntActivationList {
 	activations: Vec<PropRef>,
 	lower_bound_idx: u32,
 	upper_bound_idx: u32,
 	bounds_idx: u32,
 	domain_idx: u32,
+	fixed_daemons: Vec<PropRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,7 +70,29 @@ pub(crate) enum IntPropCond {
 	Domain,
 }
 
-impl ActivationList {
+impl BoolActivationList {
+	/// Add a propagator to the list of propagators to be enqueued when the boolean
+	/// variable is assigned.
+	pub(crate) fn add(&mut self, prop: PropRef) {
+		self.activations.push(prop);
+	}
+
+	/// Add propagator whose fixed daemon should be decreased when the boolean is
+	/// assigned.
+	pub(crate) fn add_fixed_daemon(&mut self, prop: PropRef) {
+		self.fixed_daemons.push(prop);
+	}
+
+	pub(crate) fn activations(&self) -> impl Iterator<Item = PropRef> + '_ {
+		self.activations.iter().copied()
+	}
+
+	pub(crate) fn fixed_daemons(&self) -> impl Iterator<Item = PropRef> + '_ {
+		self.fixed_daemons.iter().copied()
+	}
+}
+
+impl IntActivationList {
 	/// Add a propagator to the list of propagators to be enqueued based on the
 	/// given condition.
 	pub(crate) fn add(&mut self, mut prop: PropRef, condition: IntPropCond) {
@@ -121,6 +152,10 @@ impl ActivationList {
 		};
 	}
 
+	pub(crate) fn add_fixed_daemon(&mut self, prop: PropRef) {
+		self.fixed_daemons.push(prop);
+	}
+
 	/// Get an iterator over the list of propagators to be enqueued.
 	pub(crate) fn activated_by(&self, event: IntEvent) -> impl Iterator<Item = PropRef> + '_ {
 		let r1 = if event == IntEvent::LowerBound {
@@ -140,6 +175,12 @@ impl ActivationList {
 			.iter()
 			.copied()
 			.chain(self.activations[r2].iter().copied())
+	}
+
+	/// Add a propagator whose fixed daemon should be decreased when the variable
+	/// is fixed to a single value.
+	pub(crate) fn fixed_daemons(&self) -> impl Iterator<Item = PropRef> + '_ {
+		self.fixed_daemons.iter().copied()
 	}
 }
 
@@ -166,7 +207,7 @@ mod tests {
 	use itertools::Itertools;
 
 	use crate::solver::engine::{
-		activation_list::{ActivationList, IntEvent, IntPropCond},
+		activation_list::{IntActivationList, IntEvent, IntPropCond},
 		PropRef,
 	};
 
@@ -181,7 +222,7 @@ mod tests {
 		];
 
 		for list in props.iter().permutations(5) {
-			let mut activation_list = ActivationList::default();
+			let mut activation_list = IntActivationList::default();
 			for (prop, cond) in list.iter() {
 				activation_list.add(*prop, *cond);
 			}

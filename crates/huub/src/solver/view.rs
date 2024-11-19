@@ -114,9 +114,10 @@ impl IntView {
 					let _ = val_iter.next();
 					for (lit, val) in storage.clone().zip(val_iter) {
 						let i: NonZeroI32 = lit.into();
-						let geq = LitMeaning::GreaterEq(transformer.transform(val));
-						let lt = LitMeaning::Less(transformer.transform(val));
-						lits.extend([(i, geq), (-i, lt)]);
+						let orig = LitMeaning::Less(val);
+						let lt = transformer.transform_lit(orig);
+						let geq = !lt.clone();
+						lits.extend([(i, lt), (-i, geq)]);
 					}
 				}
 
@@ -126,8 +127,9 @@ impl IntView {
 					let _ = val_iter.next_back();
 					for (lit, val) in vars.clone().zip(val_iter) {
 						let i: NonZeroI32 = lit.into();
-						let eq = LitMeaning::Eq(transformer.transform(val));
-						let ne = LitMeaning::NotEq(transformer.transform(val));
+						let orig = LitMeaning::Eq(val);
+						let eq = transformer.transform_lit(orig);
+						let ne = !eq.clone();
 						lits.extend([(i, eq), (-i, ne)]);
 					}
 				}

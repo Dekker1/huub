@@ -123,14 +123,14 @@ impl IntVar {
 			.into_iter()
 			.flatten();
 			for (ord_i, ord_j) in storage.clone().tuple_windows() {
-				let ord_i: RawLit = ord_i.into();
-				let ord_j: RawLit = ord_j.into();
-				slv.oracle.add_clause([!ord_j, ord_i]).unwrap(); // ord_j -> ord_i
+				let ord_i: RawLit = ord_i.into(); // x<i
+				let ord_j: RawLit = ord_j.into(); // x<j, where j = i + n and n≥1
+				slv.oracle.add_clause([!ord_i, ord_j]).unwrap(); // x<i -> x<(i+n)
 				if matches!(direct_encoding, DirectStorage::Eager(_)) {
 					let eq_i: RawLit = direct_enc_iter.next().unwrap().into();
-					slv.oracle.add_clause([!eq_i, ord_i]).unwrap(); // eq_i -> ord_i
-					slv.oracle.add_clause([!eq_i, !ord_j]).unwrap(); // eq_i -> !ord_j
-					slv.oracle.add_clause([eq_i, !ord_i, ord_j]).unwrap(); // !eq_i -> !ord_i \/ ord_j
+					slv.oracle.add_clause([!eq_i, !ord_i]).unwrap(); // x=i -> x≥i
+					slv.oracle.add_clause([!eq_i, ord_j]).unwrap(); // x=i -> x<(i+n)
+					slv.oracle.add_clause([eq_i, ord_i, !ord_j]).unwrap(); // x≠i -> (x<i \/ x≥(i+n))
 				}
 			}
 			debug_assert!(direct_enc_iter.next().is_none());
@@ -193,7 +193,7 @@ impl IntVar {
 			for r in self.domain.iter() {
 				let r_len = r.end() - r.start() + 1;
 				if offset < r_len {
-					return ret(LitMeaning::GreaterEq(*r.start() + offset));
+					return ret(LitMeaning::Less(*r.start() + offset));
 				}
 				offset -= r_len;
 			}
@@ -224,14 +224,14 @@ impl IntVar {
 		let mut negate = false;
 		match lit {
 			LitMeaning::Eq(i) | LitMeaning::NotEq(i) if i == lb => {
-				negate = matches!(lit, LitMeaning::Eq(_));
-				lit = LitMeaning::GreaterEq(lb + 1);
+				negate = matches!(lit, LitMeaning::NotEq(_));
+				lit = LitMeaning::Less(lb + 1);
 			}
 			LitMeaning::Eq(i) | LitMeaning::NotEq(i) if i == ub => {
-				negate = matches!(lit, LitMeaning::NotEq(_));
-				lit = LitMeaning::GreaterEq(ub);
+				negate = matches!(lit, LitMeaning::Eq(_));
+				lit = LitMeaning::Less(ub);
 			}
-			LitMeaning::Less(_) | LitMeaning::NotEq(_) => {
+			LitMeaning::GreaterEq(_) | LitMeaning::NotEq(_) => {
 				lit = !lit;
 				negate = true;
 			}
@@ -251,14 +251,14 @@ impl IntVar {
 		let (bv, negate) = self.normalize_lit_meaning(bv, lb, ub);
 
 		let bv = BoolView(match bv {
-			LitMeaning::GreaterEq(i) if i <= lb => BoolViewInner::Const(true),
-			LitMeaning::GreaterEq(i) if i > ub => BoolViewInner::Const(false),
-			LitMeaning::GreaterEq(i) => BoolViewInner::Lit(
+			LitMeaning::Less(i) if i <= lb => BoolViewInner::Const(false),
+			LitMeaning::Less(i) if i > ub => BoolViewInner::Const(true),
+			LitMeaning::Less(i) => BoolViewInner::Lit(
 				self.order_encoding
 					.entry(&self.domain, i)
 					.or_insert_with(|val, prev, next| {
 						new_var(LazyLitDef {
-							meaning: LitMeaning::GreaterEq(val),
+							meaning: LitMeaning::Less(val),
 							prev,
 							next,
 						})
@@ -313,9 +313,9 @@ impl IntVar {
 		let (bv, negate) = self.normalize_lit_meaning(bv, lb, ub);
 
 		let bv = BoolView(match bv {
-			LitMeaning::GreaterEq(i) if i <= lb => BoolViewInner::Const(true),
-			LitMeaning::GreaterEq(i) if i > ub => BoolViewInner::Const(false),
-			LitMeaning::GreaterEq(i) => self
+			LitMeaning::Less(i) if i <= lb => BoolViewInner::Const(false),
+			LitMeaning::Less(i) if i > ub => BoolViewInner::Const(true),
+			LitMeaning::Less(i) => self
 				.order_encoding
 				.find(&self.domain, i)
 				.map(|v| BoolViewInner::Lit(v.into()))?,
@@ -343,7 +343,7 @@ impl IntVar {
 		match &self.order_encoding {
 			OrderStorage::Eager { storage, .. } => {
 				let (_, offset, _) = OrderStorage::resolve_val(&self.domain, v);
-				let bv = BoolView(BoolViewInner::Lit(storage.index(offset).into()));
+				let bv = BoolView(BoolViewInner::Lit(!storage.index(offset)));
 				(bv, v)
 			}
 			OrderStorage::Lazy(storage) => {
@@ -356,7 +356,7 @@ impl IntVar {
 				};
 				while storage.storage[index].val >= v {
 					let node = &storage.storage[index];
-					let lit = BoolView(BoolViewInner::Lit(node.var.into()));
+					let lit = BoolView(BoolViewInner::Lit(!node.var));
 					if let Some(v) = trail.get_bool_val(lit) {
 						debug_assert!(v);
 						ret = (lit, node.val);
@@ -388,7 +388,7 @@ impl IntVar {
 		match &self.order_encoding {
 			OrderStorage::Eager { storage, .. } => {
 				let (_, offset, _) = OrderStorage::resolve_val(&self.domain, v);
-				let bv = BoolView(BoolViewInner::Lit(!storage.index(offset)));
+				let bv = BoolView(BoolViewInner::Lit(storage.index(offset).into()));
 				(bv, v)
 			}
 			OrderStorage::Lazy(storage) => {
@@ -401,7 +401,7 @@ impl IntVar {
 				};
 				while storage.storage[index].val <= v {
 					let node = &storage.storage[index];
-					let lit = BoolView(BoolViewInner::Lit(!node.var));
+					let lit = BoolView(BoolViewInner::Lit(node.var.into()));
 					if let Some(v) = trail.get_bool_val(lit) {
 						debug_assert!(v);
 						ret = (lit, node.val);
@@ -444,13 +444,13 @@ impl IntVar {
 					BoolViewInner::Const(true)
 				} else {
 					let (_, offset, _) = OrderStorage::resolve_val(&self.domain, lb);
-					BoolViewInner::Lit(storage.index(offset).into())
+					BoolViewInner::Lit(!storage.index(offset))
 				})
 			}
 			OrderStorage::Lazy(storage) => {
 				let lb_index = trail.get_trailed_int(storage.lb_index);
 				BoolView(if lb_index >= 0 {
-					BoolViewInner::Lit(storage[lb_index as u32].var.into())
+					BoolViewInner::Lit(!storage[lb_index as u32].var)
 				} else {
 					BoolViewInner::Const(true)
 				})
@@ -472,13 +472,13 @@ impl IntVar {
 					BoolViewInner::Const(true)
 				} else {
 					let (_, offset, _) = OrderStorage::resolve_val(&self.domain, ub + 1);
-					BoolViewInner::Lit(!storage.index(offset))
+					BoolViewInner::Lit(storage.index(offset).into())
 				})
 			}
 			OrderStorage::Lazy(storage) => {
 				let ub_index = trail.get_trailed_int(storage.ub_index);
 				BoolView(if ub_index >= 0 {
-					BoolViewInner::Lit(!storage[ub_index as u32].var)
+					BoolViewInner::Lit(storage[ub_index as u32].var.into())
 				} else {
 					BoolViewInner::Const(true)
 				})
@@ -1105,16 +1105,16 @@ impl LitMeaning {
 				let next =
 					next.expect("next should contain the GreaterEq literal for the next value"); // x≥i+n
 
-				ret.push(vec![!lit, prev]); // x=i -> x<i
-				ret.push(vec![!lit, !next]); // x=i -> x≤i+n
-				ret.push(vec![lit, !prev, next]); // x!=i -> x<i \/ x>i+n
+				ret.push(vec![!lit, !prev]); // x=i -> x≥i
+				ret.push(vec![!lit, next]); // x=i -> x<i+n
+				ret.push(vec![lit, prev, !next]); // x!=i -> x<i \/ x>i+n
 			}
-			LitMeaning::GreaterEq(_) => {
+			LitMeaning::Less(_) => {
 				if let Some(prev) = prev {
-					ret.push(vec![!lit, prev]); // x>=i -> x≥(i-n)
+					ret.push(vec![!prev, lit]); // x<(i-n) -> x<i
 				}
 				if let Some(next) = next {
-					ret.push(vec![!next, lit]); // x>=(i+n) -> x≥i
+					ret.push(vec![!lit, next]); // x<i -> x<(i+n)
 				}
 			}
 			_ => unreachable!(),
@@ -1169,24 +1169,24 @@ mod tests {
 			unreachable!()
 		};
 		let a = &mut slv.engine_mut().state.int_vars[a];
-		let lit = a.get_bool_lit(LitMeaning::GreaterEq(2)).unwrap();
-		assert_eq!(get_lit(lit), 1);
 		let lit = a.get_bool_lit(LitMeaning::Less(2)).unwrap();
+		assert_eq!(get_lit(lit), 1);
+		let lit = a.get_bool_lit(LitMeaning::GreaterEq(2)).unwrap();
 		assert_eq!(get_lit(lit), -1);
-		let lit = a.get_bool_lit(LitMeaning::GreaterEq(3)).unwrap();
+		let lit = a.get_bool_lit(LitMeaning::Less(3)).unwrap();
 		assert_eq!(get_lit(lit), 2);
-		let lit = a.get_bool_lit(LitMeaning::GreaterEq(4)).unwrap();
-		assert_eq!(get_lit(lit), 3);
 		let lit = a.get_bool_lit(LitMeaning::Less(4)).unwrap();
+		assert_eq!(get_lit(lit), 3);
+		let lit = a.get_bool_lit(LitMeaning::GreaterEq(4)).unwrap();
 		assert_eq!(get_lit(lit), -3);
 		let lit = a.get_bool_lit(LitMeaning::Eq(1)).unwrap();
-		assert_eq!(get_lit(lit), -1);
+		assert_eq!(get_lit(lit), 1);
 		let lit = a.get_bool_lit(LitMeaning::Eq(2)).unwrap();
 		assert_eq!(get_lit(lit), 4);
 		let lit = a.get_bool_lit(LitMeaning::Eq(3)).unwrap();
 		assert_eq!(get_lit(lit), 5);
 		let lit = a.get_bool_lit(LitMeaning::Eq(4)).unwrap();
-		assert_eq!(get_lit(lit), 3);
+		assert_eq!(get_lit(lit), -3);
 
 		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
@@ -1199,24 +1199,24 @@ mod tests {
 			unreachable!()
 		};
 		let a = &mut slv.engine_mut().state.int_vars[a];
-		let lit = a.get_bool_lit(LitMeaning::GreaterEq(2)).unwrap();
+		let lit = a.get_bool_lit(LitMeaning::Less(2)).unwrap();
 		assert_eq!(get_lit(lit), 1);
-		let lit = a.get_bool_lit(LitMeaning::GreaterEq(3)).unwrap();
+		let lit = a.get_bool_lit(LitMeaning::Less(3)).unwrap();
 		assert_eq!(get_lit(lit), 2);
-		let lit = a.get_bool_lit(LitMeaning::GreaterEq(4)).unwrap();
-		assert_eq!(get_lit(lit), 3);
 		let lit = a.get_bool_lit(LitMeaning::Less(4)).unwrap();
-		assert_eq!(get_lit(lit), -3);
-		let lit = a.get_bool_lit(LitMeaning::GreaterEq(8)).unwrap();
 		assert_eq!(get_lit(lit), 3);
-		let lit = a.get_bool_lit(LitMeaning::Less(8)).unwrap();
+		let lit = a.get_bool_lit(LitMeaning::GreaterEq(4)).unwrap();
 		assert_eq!(get_lit(lit), -3);
-		let lit = a.get_bool_lit(LitMeaning::GreaterEq(10)).unwrap();
-		assert_eq!(get_lit(lit), 5);
+		let lit = a.get_bool_lit(LitMeaning::Less(8)).unwrap();
+		assert_eq!(get_lit(lit), 3);
+		let lit = a.get_bool_lit(LitMeaning::GreaterEq(8)).unwrap();
+		assert_eq!(get_lit(lit), -3);
 		let lit = a.get_bool_lit(LitMeaning::Less(10)).unwrap();
+		assert_eq!(get_lit(lit), 5);
+		let lit = a.get_bool_lit(LitMeaning::GreaterEq(10)).unwrap();
 		assert_eq!(get_lit(lit), -5);
 		let lit = a.get_bool_lit(LitMeaning::Eq(1)).unwrap();
-		assert_eq!(get_lit(lit), -1);
+		assert_eq!(get_lit(lit), 1);
 		let lit = a.get_bool_lit(LitMeaning::Eq(2)).unwrap();
 		assert_eq!(get_lit(lit), 6);
 		let lit = a.get_bool_lit(LitMeaning::Eq(3)).unwrap();
@@ -1224,14 +1224,14 @@ mod tests {
 		let lit = a.get_bool_lit(LitMeaning::Eq(8)).unwrap();
 		assert_eq!(get_lit(lit), 8);
 		let lit = a.get_bool_lit(LitMeaning::Eq(10)).unwrap();
-		assert_eq!(get_lit(lit), 5);
+		assert_eq!(get_lit(lit), -5);
 
 		assert_eq!(
-			a.get_bool_lit(LitMeaning::GreaterEq(1)).unwrap(),
+			a.get_bool_lit(LitMeaning::Less(11)).unwrap(),
 			BoolView(BoolViewInner::Const(true))
 		);
 		assert_eq!(
-			a.get_bool_lit(LitMeaning::Less(11)).unwrap(),
+			a.get_bool_lit(LitMeaning::GreaterEq(1)).unwrap(),
 			BoolView(BoolViewInner::Const(true))
 		);
 		assert_eq!(

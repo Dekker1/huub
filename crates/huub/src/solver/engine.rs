@@ -51,7 +51,7 @@ macro_rules! trace_new_lit {
 			is_eq = matches!($def.meaning, LitMeaning::Eq(_)),
 			val = match $def.meaning {
 				LitMeaning::Eq(val) => val,
-				LitMeaning::GreaterEq(val) => val,
+				LitMeaning::Less(val) => val,
 				_ => unreachable!(),
 			},
 			"register new literal"

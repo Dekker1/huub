@@ -291,7 +291,7 @@ impl RecordLazyLits {
 			let meaning = if is_eq {
 				LitMeaning::Eq
 			} else {
-				LitMeaning::GreaterEq
+				LitMeaning::Less
 			}(val);
 			let mut guard = lit_reverse_map.lock().unwrap();
 			let _ = guard.insert(lit, LitName::IntLit(iv, meaning.clone()));

@@ -324,20 +324,22 @@ impl PropagatorExtension for Engine {
 		}
 
 		// Run propgagators to find any conflicts
-		ctx.run_propagators(&mut self.propagators);
-		// No propagation can be triggered (all variables are fixed, so only
-		// conflicts are possible)
-		debug_assert!(self.state.propagation_queue.is_empty());
-
-		// Process propagation results, and accept model if no conflict is detected
-		let accept = if let Some(conflict) = self.state.conflict.clone() {
-			// Move conflict to clauses before backtrack
-			self.state.clauses.push_back(conflict);
-			false
-		} else {
-			true
-		};
-
+		let mut accept = true;
+		loop {
+			ctx.run_propagators(&mut self.propagators);
+			// No propagation can be triggered (all variables are fixed, so only
+			// conflicts are possible)
+			debug_assert!(ctx.state.propagation_queue.is_empty());
+			// Process propagation results, and accept model if no conflict is
+			// detected
+			if let Some(conflict) = ctx.state.conflict.take() {
+				// Move conflict to clauses before backtrack
+				ctx.state.clauses.push_back(conflict);
+				accept = false;
+			} else {
+				break;
+			};
+		}
 		// Revert to real decision level
 		self.state.notify_backtrack::<true>(level as usize, false);
 

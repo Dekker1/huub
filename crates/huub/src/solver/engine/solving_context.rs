@@ -132,6 +132,7 @@ impl<'a> SolvingContext<'a> {
 	/// returns literals to be propagated by the SAT oracle, or the queue is empty.
 	pub(crate) fn run_propagators(&mut self, propagators: &mut IndexVec<PropRef, BoxedPropagator>) {
 		while let Some(p) = self.state.propagator_queue.pop() {
+			debug_assert!(!self.state.failed);
 			debug_assert!(self.state.conflict.is_none());
 			self.state.enqueued[p] = false;
 			self.current_prop = p;
@@ -144,6 +145,7 @@ impl<'a> SolvingContext<'a> {
 				trace!(clause = ?clause.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "conflict detected");
 				debug_assert!(!clause.is_empty());
 				debug_assert!(self.state.conflict.is_none());
+				self.state.failed = true;
 				self.state.conflict = Some(clause);
 			}
 			if self.state.conflict.is_some() || !self.state.propagation_queue.is_empty() {

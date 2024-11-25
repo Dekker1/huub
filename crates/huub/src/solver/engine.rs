@@ -107,6 +107,13 @@ pub(crate) struct State {
 	pub(crate) reason_map: HashMap<RawLit, Reason>,
 	/// Whether conflict has (already) been detected
 	pub(crate) conflict: Option<Clause>,
+	/// Whether the solver is in a failure state.
+	///
+	/// Triggered when a conflict is detected during propagation, the solver
+	/// should backtrack. Debug assertions will be triggered if other actions are
+	/// taken instead. Some mechanisms, such as propagator queueing, might be
+	/// disabled to optimize the execution of the solver.
+	pub(crate) failed: bool,
 
 	// ---- Non-Trailed Infrastructure ----
 	/// Storage for clauses to be communicated to the solver
@@ -140,7 +147,7 @@ impl PropagatorExtension for Engine {
 			clause.map(|c| (c, ClausePersistence::Irreduntant))
 		} else if !self.state.propagation_queue.is_empty() {
 			None // Require that the solver first applies the remaining propagation
-		} else if let Some(conflict) = self.state.conflict.clone() {
+		} else if let Some(conflict) = self.state.conflict.take() {
 			debug!(clause = ?conflict.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "add conflict clause");
 			Some((conflict, ClausePersistence::Forgettable))
 		} else {
@@ -172,13 +179,12 @@ impl PropagatorExtension for Engine {
 		slv: &mut dyn SolvingActions,
 		_sol: &dyn pindakaas::Valuation,
 	) -> bool {
+		// Solver should not be in a failed state (no propagator conflict should
+		// exist), and any conflict should have been communicated to the SAT oracle.
+		debug_assert!(!self.state.failed);
 		debug_assert!(self.state.conflict.is_none());
-		// If there is a known conflict, return false
-		if !self.state.propagation_queue.is_empty() || self.state.conflict.is_some() {
-			self.state.ensure_clause_changes(&mut self.propagators);
-			debug!(accept = false, "check model");
-			return false;
-		}
+		// All propagation should have been communicated to the SAT oracle.
+		debug_assert!(self.state.propagation_queue.is_empty());
 
 		// Check model consistency assuming that all currently unfixed integer
 		// variables take the lower bound as its value.
@@ -219,17 +225,14 @@ impl PropagatorExtension for Engine {
 		debug_assert!(self.state.propagation_queue.is_empty());
 
 		// Process propagation results, and accept model if no conflict is detected
-		let accept = if let Some(conflict) = self.state.conflict.clone() {
-			// Move conflict to clauses before backtrack
-			self.state.clauses.push_back(conflict);
-			false
-		} else {
-			true
-		};
+		let conflict = self.state.conflict.take();
 
 		// Revert to real decision level
 		self.state.notify_backtrack::<true>(level as usize, false);
+		debug_assert!(self.state.conflict.is_none());
+		self.state.conflict = conflict;
 
+		let accept = self.state.conflict.is_none();
 		debug!(accept, "check model");
 		accept
 	}
@@ -276,7 +279,7 @@ impl PropagatorExtension for Engine {
 				continue;
 			}
 			// Enqueue propagators, if no conflict has been found
-			if self.state.conflict.is_none() {
+			if !self.state.failed {
 				self.state.enqueue_propagators(lit, None);
 			}
 		}
@@ -289,7 +292,16 @@ impl PropagatorExtension for Engine {
 	}
 
 	fn notify_new_decision_level(&mut self) {
+		// Solver should not be in a failed state (no propagator conflict should
+		// exist), and any conflict should have been communicated to the SAT oracle.
+		debug_assert!(!self.state.failed);
 		debug_assert!(self.state.conflict.is_none());
+		// All propagation should have been communicated to the SAT oracle.
+		debug_assert!(self.state.propagation_queue.is_empty());
+		// Note that `self.state.clauses` may not be empty becuase [`Self::decide`]
+		// might have introduced a new literal, which would in turn add its defining
+		// clauses to `self.state.clauses`.
+
 		trace!("new decision level");
 		self.state.notify_new_decision_level();
 	}
@@ -497,23 +509,6 @@ impl State {
 		}
 	}
 
-	#[inline]
-	/// Helper method that ensures that all changes are communicated to the solver
-	/// as clauses.
-	///
-	/// The method returns whether any propagations were converted to clauses.
-	fn ensure_clause_changes(&mut self, propagators: &mut IndexVec<PropRef, BoxedPropagator>) {
-		let queue = mem::take(&mut self.propagation_queue);
-		for lit in queue {
-			let clause = if let Some(reason) = self.reason_map.remove(&lit) {
-				reason.explain(propagators, self, Some(lit))
-			} else {
-				vec![lit]
-			};
-			self.clauses.push_back(clause);
-		}
-	}
-
 	/// Internal method called to process the backtracking to an earlier decision
 	/// level.
 	///
@@ -526,6 +521,7 @@ impl State {
 		debug_assert!(!ARTIFICIAL || level as u32 == self.trail.decision_level() - 1);
 		debug_assert!(!ARTIFICIAL || !restart);
 		// Resolve the conflict status
+		self.failed = false;
 		self.conflict = None;
 		// Remove (now invalid) propagations (but leave clauses in place)
 		self.propagation_queue.clear();

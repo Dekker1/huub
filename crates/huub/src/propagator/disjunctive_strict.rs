@@ -1,12 +1,12 @@
+//! Propagators for the `disjunctive_strict` constraint, which enforces that no
+//! two tasks overlap from a list of tasks.
+
 use itertools::Itertools;
 use pindakaas::Lit as RawLit;
 use tracing::trace;
 
 use crate::{
-	actions::{
-		explanation::ExplanationActions, initialization::InitializationActions,
-		inspection::InspectionActions,
-	},
+	actions::{ExplanationActions, InitializationActions, InspectionActions},
 	propagator::{conflict::Conflict, reason::ReasonBuilder, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
@@ -17,21 +17,28 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A node structure for the [`OmegaThetaTree`].
 struct OmegaThetaTreeNode {
-	// precomputed values for the set of tasks under the tree rooted at this node
+	/// Total duration of the tasks under the tree rooted at this node.
 	total_durations: i32,
+	/// Earliest completion time of the tasks under the tree rooted at this node.
 	earliest_completion: i32,
 
-	// precomputed values for the set of tasks under the tree rooted at this node
-	// at most one gray node can be used in the subtree rooted at this node
+	/// Total duration of the tasks under the tree rooted at this node, with at
+	/// most one gray node.
 	total_durations_gray: i32,
+	/// Earliest completion time of the tasks under the tree rooted at this node,
+	/// with at most one gray node.
 	earliest_completion_gray: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A binary tree structure that stores the total duration and earliest
+/// completion time of tasks.
 struct OmegaThetaTree {
+	/// Storage of the nodes of the tree.
 	nodes: Vec<OmegaThetaTreeNode>,
-	size: usize,
+	/// Index of the first leaf node.
 	leaves_start_idx: usize,
 }
 
@@ -55,6 +62,7 @@ impl OmegaThetaTree {
 		(i - 1) >> 1
 	}
 
+	/// Create a new OmegaThetaTree with `tasks_no` tasks.
 	pub(crate) fn new(tasks_no: usize) -> Self {
 		let tree_size = (1 << (33 - (tasks_no as i32 - 1).leading_zeros())) - 1;
 		OmegaThetaTree {
@@ -67,12 +75,11 @@ impl OmegaThetaTree {
 				};
 				tree_size
 			],
-			size: tree_size,
 			leaves_start_idx: tree_size / 2,
 		}
 	}
 
-	// task are sorted by earliest start time
+	/// Fill the tree with task are sorted by earliest start time.
 	fn fill(&mut self, sorted_tasks: &[usize], sorted_time: &[i32], durations: &[i64]) {
 		let n = sorted_tasks.len();
 		// fill the leave nodes
@@ -91,12 +98,14 @@ impl OmegaThetaTree {
 		});
 	}
 
+	/// Return the root node of the tree.
 	fn root(&self) -> &OmegaThetaTreeNode {
 		&self.nodes[0]
 	}
 
+	/// Remove the task at index `i` from the tree.
 	fn remove_task(&mut self, i: usize) {
-		assert!(self.leaves_start_idx + i < self.size);
+		assert!(self.leaves_start_idx + i < self.nodes.len());
 		let idx = self.leaves_start_idx + i;
 		self.nodes[idx].total_durations = 0;
 		self.nodes[idx].earliest_completion = i32::MIN;
@@ -105,14 +114,16 @@ impl OmegaThetaTree {
 		self.recursive_update(idx);
 	}
 
+	/// Annotate the leave node `i` as gray, and update its ancestors.
 	fn annotate_gray_task(&mut self, i: usize) {
-		assert!(self.leaves_start_idx + i < self.size);
+		assert!(self.leaves_start_idx + i < self.nodes.len());
 		let idx = self.leaves_start_idx + i;
 		self.nodes[idx].total_durations = 0;
 		self.nodes[idx].earliest_completion = i32::MIN;
 		self.recursive_update(idx);
 	}
 
+	/// Update node `i` and trigger the update of its parent recursively.
 	fn recursive_update(&mut self, i: usize) {
 		if i == 0 {
 			return;
@@ -122,6 +133,7 @@ impl OmegaThetaTree {
 		self.recursive_update(parent);
 	}
 
+	/// Update the internal node `i` based on its children.
 	fn update_internal_node(&mut self, i: usize) {
 		let left_child = Self::left_child(i);
 		let right_child = Self::right_child(i);
@@ -152,7 +164,7 @@ impl OmegaThetaTree {
 		);
 	}
 
-	// Find the gray task responsible for pushing the earliest completion time
+	/// Find the gray task responsible for pushing the earliest completion time
 	fn blocked_task(&self, earliest_completion_time: i32) -> usize {
 		assert!(self.nodes[0].earliest_completion <= earliest_completion_time);
 		assert!(self.nodes[0].earliest_completion_gray >= earliest_completion_time);
@@ -203,7 +215,7 @@ impl OmegaThetaTree {
 		node_id - self.leaves_start_idx
 	}
 
-	// Finding the task responsible for pushing the earliest completion time beyond the time_bound
+	/// Finding the task responsible for pushing the earliest completion time beyond the time_bound
 	fn binding_task(&self, time_bound: i32, node_id: usize) -> usize {
 		assert!(self.nodes[0].earliest_completion >= time_bound);
 		let mut node_id = node_id;
@@ -221,9 +233,9 @@ impl OmegaThetaTree {
 		node_id - self.leaves_start_idx
 	}
 
-	// Finding the task responsible for min{est_S, est_i} where
-	// - S is the set of tasks in the tree
-	// - task i is one of the gray task in the tree
+	/// Finding the task responsible for min{est_S, est_i} where
+	/// - S is the set of tasks in the tree
+	/// - task i is one of the gray task in the tree
 	fn gray_est_responsible_task(&self, earliest_completion_time: i32) -> usize {
 		assert!(self.nodes[0].earliest_completion <= earliest_completion_time);
 		assert!(self.nodes[0].earliest_completion_gray >= earliest_completion_time);
@@ -252,29 +264,41 @@ impl OmegaThetaTree {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Internal structure to store trailed information about tasks.
 struct TaskInfo {
+	/// Earliest start time of the task.
 	earliest_start: TrailedInt,
+	/// Latest completion time of the task.
 	latest_completion: TrailedInt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A propagator for the `disjunctive` constraint using the Strict Edge Finding
+/// algorithm.
 pub(crate) struct DisjunctiveStrictEdgeFinding {
-	// Parameters
+	/// Start time variables of each task.
 	start_times: Vec<IntView>,
+	/// Durations of each task.
 	durations: Vec<i64>,
 
 	// Internal state for propagation
+	/// Indexes of the tasks sorted by earliest start time.
 	tasks_sorted_earliest_start: Vec<usize>,
+	/// Indexes of the tasks sorted by latest completion time.
 	tasks_sorted_lastest_completion: Vec<usize>,
+	/// Rank of the tasks by earliest start time.
 	task_rankings_by_earliest_start: Vec<usize>,
 
+	/// The Omega-Theta tree to compute the earliest completion time.
 	ot_tree: OmegaThetaTree,
 
-	// Internal state for explanation
+	/// Trailed earliest start and latest completion times of each task to aid in
+	/// explaination.
 	trailed_info: Vec<TaskInfo>,
 }
 
 impl DisjunctiveStrictEdgeFinding {
+	/// Prepare a [`DisjunctiveStrictEdgeFinding`] to be posted to the solver.
 	pub(crate) fn prepare<V: Into<IntView>, I: IntoIterator<Item = V>>(
 		start_times: I,
 		durations: Vec<i64>,
@@ -287,17 +311,20 @@ impl DisjunctiveStrictEdgeFinding {
 	}
 
 	#[inline]
+	/// Return the (current) latest completion time of task `i`.
 	fn latest_completion_time<I: InspectionActions>(&self, i: usize, actions: &mut I) -> i32 {
 		actions.get_int_upper_bound(self.start_times[i]) as i32 + self.durations[i] as i32
 	}
 
 	#[inline]
+	/// Return the (current) earliest start time of task `i`.
 	fn earliest_start_time<I: InspectionActions>(&self, i: usize, actions: &mut I) -> i32 {
 		actions.get_int_lower_bound(self.start_times[i]) as i32
 	}
 
-	// Explain why the current set of tasks in the tree must be completed after time_bound
 	#[inline]
+	/// Explain why the current set of tasks in the tree must be completed after
+	/// `time_bound`.
 	fn explain_earliest_completion_time<A: ExplanationActions>(
 		&self,
 		time_bound: i32,
@@ -341,11 +368,15 @@ impl DisjunctiveStrictEdgeFinding {
 				.collect_vec()
 		}
 	}
+}
 
-	fn propagate_lower_bounds<P: PropagationActions>(
-		&mut self,
-		actions: &mut P,
-	) -> Result<(), Conflict> {
+impl<P, E> Propagator<P, E> for DisjunctiveStrictEdgeFinding
+where
+	P: PropagationActions,
+	E: ExplanationActions,
+{
+	#[tracing::instrument(name = "disjunctive_bounds", level = "trace", skip(self, actions))]
+	fn propagate(&mut self, actions: &mut P) -> Result<(), Conflict> {
 		// sort the tasks by earliest start time and construct the EF trees
 		let earliest_start: Vec<_> = self
 			.start_times
@@ -454,18 +485,6 @@ impl DisjunctiveStrictEdgeFinding {
 		}
 		Ok(())
 	}
-}
-
-impl<P, E> Propagator<P, E> for DisjunctiveStrictEdgeFinding
-where
-	P: PropagationActions,
-	E: ExplanationActions,
-{
-	#[tracing::instrument(name = "disjunctive_bounds", level = "trace", skip(self, actions))]
-	fn propagate(&mut self, actions: &mut P) -> Result<(), Conflict> {
-		self.propagate_lower_bounds(actions)?;
-		Ok(())
-	}
 
 	// todo: check whether this explanation can be generalized?
 	fn explain(&mut self, actions: &mut E, _: Option<RawLit>, task_no: u64) -> Conjunction {
@@ -526,8 +545,11 @@ where
 	}
 }
 
+/// [`Poster`] for the [`DisjunctiveStrictEdgeFinding`] propagator.
 struct DisjunctiveEdgeFindingPoster {
+	/// Start times of the tasks
 	start_times: Vec<IntView>,
+	/// Durations of the tasks
 	durations: Vec<i64>,
 }
 

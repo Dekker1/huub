@@ -1,5 +1,8 @@
+//! Propagators for the `int_times` constraint, which enforces that the product
+//! of two integer variables is equal to a third integer variable.
+
 use crate::{
-	actions::{explanation::ExplanationActions, initialization::InitializationActions},
+	actions::{ExplanationActions, InitializationActions},
 	helpers::{div_ceil, div_floor},
 	propagator::{conflict::Conflict, reason::CachedReason, PropagationActions, Propagator},
 	solver::{
@@ -12,15 +15,16 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Bounds propagator for the constraint `z = x * y`.
 pub(crate) struct IntTimesBounds {
-	/// First variable in the product
+	/// First factor variable
 	x: IntView,
-	/// Second variable in the product
+	/// Second factor variable
 	y: IntView,
-	/// Result of the product
+	/// Product variable
 	z: IntView,
 }
 
 impl IntTimesBounds {
+	/// Prepare a new [`IntTimesBounds`] propagator to be posted to the solver.
 	pub(crate) fn prepare(x: IntView, y: IntView, z: IntView) -> impl Poster {
 		IntTimesBoundsPoster { x, y, z }
 	}
@@ -113,9 +117,13 @@ where
 	}
 }
 
+/// [`Poster`] for the [`IntTimesBounds`] propagator.
 struct IntTimesBoundsPoster {
+	/// First factor
 	x: IntView,
+	/// Second factor
 	y: IntView,
+	/// Product
 	z: IntView,
 }
 impl Poster for IntTimesBoundsPoster {

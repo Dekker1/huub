@@ -1,3 +1,9 @@
+//! A Benchmarking framework for the full fzn-huub solver.
+//!
+//! Note that these benchmarks run through the full solver, providing the
+//! instances as file input, and reading the output from its output stream. The
+//! total time taken is repeatedly measured.
+
 #![expect(
 	unused_crate_dependencies,
 	reason = "only dependencies for benchmarking are used in this file"
@@ -9,34 +15,45 @@ use std::{
 };
 
 use codspeed_criterion_compat::{
-	criterion_group, criterion_main, measurement::Measurement, BenchmarkGroup, BenchmarkId,
-	Criterion, SamplingMode,
+	criterion_main, measurement::Measurement, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode,
 };
 use expect_test::expect_file;
 use fzn_huub::Cli;
 use pico_args::Arguments;
 
+/// The string that is printed when the solver has proven that no more/better
+/// solutions exist.
 const FZN_COMPLETE: &str = "==========\n";
+/// The string that is printed after every solution.
 const FZN_SEPERATOR: &str = "----------\n";
+/// The string that is printed when the solver has proven that the instance is
+/// unsatisfiable.
 // const FZN_UNSATISFIABLE: &str = "=====UNSATISFIABLE=====\n";
 
 #[derive(Debug, Clone)]
+/// Configuration of criterion for a specific benchmark.
 struct CriterionConfig {
+	/// The [`SamplingMode`] to use, or none to use the default.
 	sampling_mode: Option<SamplingMode>,
+	/// The number of samples to take, or none to use the default.
 	sample_size: Option<usize>,
+	/// The time to measure for, or none to use the default.
 	measurement_time: Option<Duration>,
 }
 
+/// A configuration for instances that run in a few milliseconds.
 const INSTANT_CONFIG: CriterionConfig = CriterionConfig {
 	sampling_mode: None,
 	sample_size: Some(60),
 	measurement_time: None,
 };
+/// A configuration for instances that run in less than a second.
 const MILLISECONDS_CONFIG: CriterionConfig = CriterionConfig {
 	sampling_mode: Some(SamplingMode::Flat),
 	sample_size: Some(20),
 	measurement_time: Some(Duration::from_secs(20)),
 };
+/// A configuration for instances that run for a few seconds.
 const FEW_SECONDS_CONFIG: CriterionConfig = CriterionConfig {
 	sampling_mode: Some(SamplingMode::Flat),
 	sample_size: Some(10),
@@ -44,14 +61,19 @@ const FEW_SECONDS_CONFIG: CriterionConfig = CriterionConfig {
 };
 
 #[derive(Debug, Clone, Copy)]
+/// Output stream that immediately discards all data.
 struct DummyOutput;
 
 #[derive(Debug, Clone, Copy)]
+/// What the goal is when running the solver on an instance.
 enum InstanceType {
+	/// An optimal solution should be found.
 	Optimization,
+	/// A correct solution should be found.
 	Satisfaction,
 }
 
+/// Run the solver on the given instance and return the output as raw bytes.
 fn run_solver(fzn: &Path) -> Vec<u8> {
 	let args = Arguments::from_vec(vec![fzn.into()]);
 	let cli: Cli<_, _> = args.try_into().unwrap();
@@ -62,6 +84,7 @@ fn run_solver(fzn: &Path) -> Vec<u8> {
 	out
 }
 
+/// Run the solver on the given instance and check the output.
 fn check_final(name: &str, instance_type: InstanceType) {
 	let base = PathBuf::from("./corpus/").join(name);
 	let fzn = base.with_extension("fzn.json");
@@ -86,6 +109,10 @@ fn check_final(name: &str, instance_type: InstanceType) {
 	}
 }
 
+/// Benchmarks of optimization problems (finding the optimal solution).
+///
+/// Note that it is assumed that the solver will always find the same optimal
+/// solution, which is then checked.
 fn optimization(c: &mut Criterion) {
 	let mut group = c.benchmark_group("optimization");
 	let instances = vec![
@@ -103,12 +130,16 @@ fn optimization(c: &mut Criterion) {
 	for (instance, config) in instances {
 		config.apply(&mut group);
 		let _ = group.bench_with_input(BenchmarkId::from_parameter(instance), &instance, |b, s| {
-			b.iter(|| check_final(s, InstanceType::Optimization))
+			b.iter(|| check_final(s, InstanceType::Optimization));
 		});
 	}
 	group.finish();
 }
 
+/// Benchmarks of satisfaction problems (finding any correct solution).
+///
+/// Note that it is assumed that the solver will always find the same solution,
+/// which is then checked.
 fn satisfaction(c: &mut Criterion) {
 	let mut group = c.benchmark_group("satisfaction");
 	let instances = vec![
@@ -121,16 +152,16 @@ fn satisfaction(c: &mut Criterion) {
 	for (instance, config) in instances {
 		config.apply(&mut group);
 		let _ = group.bench_with_input(BenchmarkId::from_parameter(instance), &instance, |b, s| {
-			b.iter(|| check_final(s, InstanceType::Satisfaction))
+			b.iter(|| check_final(s, InstanceType::Satisfaction));
 		});
 	}
 	group.finish();
 }
 
-criterion_group!(benches, optimization, satisfaction);
-criterion_main!(benches);
+criterion_main!(criterion_gen::benches);
 
 impl CriterionConfig {
+	/// Apply the configuration to the given [`BenchmarkGroup`].
 	fn apply<M: Measurement>(&self, group: &mut BenchmarkGroup<'_, M>) {
 		if let Some(sampling_mode) = self.sampling_mode {
 			let _ = group.sampling_mode(sampling_mode);
@@ -151,4 +182,13 @@ impl Write for DummyOutput {
 	fn flush(&mut self) -> std::io::Result<()> {
 		Ok(())
 	}
+}
+
+/// Module to capture the generated criterion code (which cannot be documented).
+mod criterion_gen {
+	use codspeed_criterion_compat::criterion_group;
+
+	use crate::{optimization, satisfaction};
+
+	criterion_group!(benches, optimization, satisfaction);
 }

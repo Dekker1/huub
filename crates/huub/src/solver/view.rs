@@ -1,3 +1,6 @@
+//! The view module contains the types that are used to reference values in the
+//! solver that can be expected as part of a solution, and are used internally
+//! in branchers and propagators.
 use std::{
 	num::NonZeroI32,
 	ops::{Add, Mul, Neg, Not},
@@ -18,8 +21,12 @@ use crate::{
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// A reference to a value in the solver that can be expected as part of a
+/// solution.
 pub enum SolverView {
+	/// A Boolean type value.
 	Bool(BoolView),
+	/// An integer type value.
 	Int(IntView),
 }
 
@@ -45,9 +52,12 @@ impl From<&IntView> for SolverView {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// A reference to a Boolean type value in the solver that can be expected as
+/// part of a solution.
 pub struct BoolView(pub(crate) BoolViewInner);
 
 impl BoolView {
+	/// Return an integers that can used to identify the literal, if there is one.
 	pub fn reverse_map_info(&self) -> Option<NonZeroI32> {
 		match self.0 {
 			BoolViewInner::Lit(v) => Some(v.into()),
@@ -58,8 +68,13 @@ impl BoolView {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[allow(variant_size_differences, reason = "`Lit` cannot be as smal as `bool`")]
+/// The internal representation of a [`BoolView`].
+///
+/// Note that this representation is not meant to be exposed to the user.
 pub(crate) enum BoolViewInner {
+	/// A Boolean literal in the solver.
 	Lit(RawLit),
+	/// A constant boolean value.
 	Const(bool),
 }
 
@@ -91,9 +106,13 @@ impl From<bool> for BoolView {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// A reference to a integer type value in the solver that can be expected as
+/// part of a solution.
 pub struct IntView(pub(crate) IntViewInner);
 
 impl IntView {
+	/// Return a list of integers that can used to identify the literals that are
+	/// associated to an integer view, and the meaning of those literals.
 	pub fn lit_reverse_map_info<Oracle: PropagatingSolver<Engine>>(
 		&self,
 		slv: &Solver<Oracle>,
@@ -145,6 +164,9 @@ impl IntView {
 		}
 	}
 
+	/// Returns an integer that can be used to identify the associated integer
+	/// decision variable and whether the int view is a view on another decision
+	/// variable.
 	pub fn int_reverse_map_info(&self) -> (Option<usize>, bool) {
 		match self.0 {
 			IntViewInner::VarRef(v) => (Some(v.into()), false),
@@ -173,6 +195,9 @@ impl From<BoolView> for IntView {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// The internal representation of [`IntView`].
+///
+/// Note that this representation is not meant to be exposed to the user.
 pub(crate) enum IntViewInner {
 	/// (Raw) Integer Variable
 	/// Reference to location in the Engine's State
@@ -181,12 +206,17 @@ pub(crate) enum IntViewInner {
 	Const(IntVal),
 	/// Linear View of an Integer Variable
 	Linear {
+		/// Linear transformation on the integer value of the variable.
 		transformer: LinearTransform,
+		/// Reference to an integer variable.
 		var: IntVarRef,
 	},
-	/// Linear View of an Boolean Literal
+	/// Linear View of an Boolean Literal.
 	Bool {
+		/// Linear transformation on the integer value of the Boolean literal.
 		transformer: LinearTransform,
+		/// The Boolean literal that is being treated as an integer (`false` -> `0`
+		/// and `true` -> `1`).
 		lit: RawLit,
 	},
 }

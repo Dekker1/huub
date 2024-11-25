@@ -1,9 +1,11 @@
+//! Module defining a type to signal a conflict during the solving process.
+
 use std::{error::Error, fmt};
 
 use pindakaas::Lit as RawLit;
 
 use crate::{
-	actions::explanation::ExplanationActions,
+	actions::ExplanationActions,
 	propagator::reason::{Reason, ReasonBuilder},
 };
 
@@ -43,7 +45,9 @@ impl Conflict {
 		}
 	}
 }
+
 impl Error for Conflict {}
+
 impl fmt::Display for Conflict {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		write!(f, "Conflict detected: nogood {:?}", self.reason)

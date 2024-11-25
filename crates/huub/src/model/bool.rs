@@ -1,3 +1,6 @@
+//! Representation and manipulation of Boolean decision variable and expressions
+//! in [`Model`].
+
 use std::{iter::once, ops::Not};
 
 use pindakaas::{
@@ -19,22 +22,37 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A propositional logic formula that can be used as part of a [`Constraint`]
+/// in a [`Model`].
 pub enum BoolExpr {
+	/// Direct Boolean view
 	View(BoolView),
+	/// Logical negation of a Boolean expression.
 	Not(Box<BoolExpr>),
+	/// Disjunction of a list of Boolean expressions.
 	Or(Vec<BoolExpr>),
+	/// Conjunction of a list of Boolean expressions.
 	And(Vec<BoolExpr>),
+	/// Logical implication of the first Boolean expression to the second.
 	Implies(Box<BoolExpr>, Box<BoolExpr>),
+	/// Logical equivalence of a list of Boolean expressions.
 	Equiv(Vec<BoolExpr>),
+	/// Exclusive disjunction of a list of Boolean expressions.
 	Xor(Vec<BoolExpr>),
+	/// If-then-else expression: if the condition holds, then the `then`
+	/// expression must also hold, otherwise the `els` expression must hold.
 	IfThenElse {
+		/// Condition expression, choosing between the `then` and `els`.
 		cond: Box<BoolExpr>,
+		/// Expression that must hold if the condition holds.
 		then: Box<BoolExpr>,
+		/// Expression that must hold if the condition does not hold.
 		els: Box<BoolExpr>,
 	},
 }
 
 impl BoolExpr {
+	/// Add clauses to the solver to enforce the Boolean expression.
 	pub(crate) fn constrain<Oracle: PropagatingSolver<Engine>>(
 		&self,
 		slv: &mut Solver<Oracle>,
@@ -160,6 +178,8 @@ impl BoolExpr {
 		}
 	}
 
+	/// Reifies the Boolean expression into a Boolean view (which will be a
+	/// literal or constant in the oracle solver).
 	pub(crate) fn to_arg<Oracle: PropagatingSolver<Engine>>(
 		&self,
 		slv: &mut Solver<Oracle>,
@@ -339,6 +359,10 @@ impl BoolExpr {
 		}
 	}
 
+	/// Helper function that takes an expression that was contains in a
+	/// [`BoolExpr::Not`] and return an equivalent expression that is equivalent
+	/// to the negation of the original expression by pushing the negation
+	/// inwards. If this is not possible, then `None` is returned.
 	fn push_not_inward(&self) -> Option<BoolExpr> {
 		Some(match self {
 			BoolExpr::View(v) => BoolExpr::View(!v),
@@ -404,14 +428,24 @@ impl From<&BoolView> for BoolExpr {
 	variant_size_differences,
 	reason = "`bool` is smaller than all other variants"
 )]
+/// A Boolean expression that is represented using a literal or a constaint in
+/// the oracle SAT solver.
 pub enum BoolView {
+	/// A Boolean decision variable or its negation.
 	Lit(RawLit),
+	/// A constant Boolean value.
 	Const(bool),
+	/// Wether an integer is equal to a constant.
 	IntEq(Box<int::IntView>, IntVal),
+	/// Wether an integer is greater than a constant.
 	IntGreater(Box<int::IntView>, IntVal),
+	/// Wether an integer is greater or equal to a constant.
 	IntGreaterEq(Box<int::IntView>, IntVal),
+	/// Wether an integer is less than a constant.
 	IntLess(Box<int::IntView>, IntVal),
+	/// Wether an integer is less or equal to a constant.
 	IntLessEq(Box<int::IntView>, IntVal),
+	/// Wether an integer is not equal to a constant.
 	IntNotEq(Box<int::IntView>, IntVal),
 }
 
@@ -420,6 +454,7 @@ impl From<bool> for BoolView {
 		BoolView::Const(v)
 	}
 }
+
 impl Not for BoolView {
 	type Output = BoolView;
 	fn not(self) -> Self::Output {

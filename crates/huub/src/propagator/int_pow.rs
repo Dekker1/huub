@@ -1,5 +1,9 @@
+//! Propagators for the `int_pow` constraint, which enforces that the result of
+//! exponentiation of two integer variables is equal to a third integer
+//! variable.
+
 use crate::{
-	actions::{explanation::ExplanationActions, initialization::InitializationActions},
+	actions::{ExplanationActions, InitializationActions},
 	propagator::{conflict::Conflict, reason::CachedReason, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
@@ -20,6 +24,7 @@ pub(crate) struct IntPowBounds {
 }
 
 impl IntPowBounds {
+	/// Prepare a new [`IntPowBounds`] propagator to be posted to the solver.
 	pub(crate) fn prepare(base: IntView, exponent: IntView, result: IntView) -> impl Poster {
 		IntPowBoundsPoster {
 			base,
@@ -28,6 +33,8 @@ impl IntPowBounds {
 		}
 	}
 
+	/// Propagate the bounds of result variale based on the bounds of base and
+	/// exponent variables.
 	fn propagate_result<P: PropagationActions>(&mut self, actions: &mut P) -> Result<(), Conflict> {
 		let (base_lb, base_ub) = actions.get_int_bounds(self.base);
 		let (exp_lb, exp_ub) = actions.get_int_bounds(self.exponent);
@@ -106,6 +113,7 @@ impl IntPowBounds {
 		Ok(())
 	}
 
+	/// Propagates the bounds of the base and exponent to the result.
 	fn propagate_base<P: PropagationActions>(&mut self, actions: &mut P) -> Result<(), Conflict> {
 		let (base_lb, base_ub) = actions.get_int_bounds(self.base);
 		let (res_lb, res_ub) = actions.get_int_bounds(self.result);
@@ -180,6 +188,8 @@ impl IntPowBounds {
 		Ok(())
 	}
 
+	/// Filter the bounds of the exponent based on the bounds of the base and the
+	/// result.
 	fn propagate_exponent<P: PropagationActions>(
 		&mut self,
 		actions: &mut P,
@@ -240,11 +250,16 @@ where
 	}
 }
 
+/// [`Poster`] for [`IntPowBounds`].
 struct IntPowBoundsPoster {
+	/// The variable representing the base.
 	base: IntView,
+	/// The variable representing the exponent.
 	exponent: IntView,
+	/// The variable representing the result.
 	result: IntView,
 }
+
 impl Poster for IntPowBoundsPoster {
 	fn post<I: InitializationActions + ?Sized>(
 		self,
@@ -291,6 +306,8 @@ impl Poster for IntPowBoundsPoster {
 	}
 }
 
+/// Calculate the power of a base to an exponent according to the rules of
+/// integer arithmetic (matching the MiniZinc semantics).
 fn pow(base: IntVal, exponent: IntVal) -> Option<IntVal> {
 	Some(match exponent {
 		0 => 1,

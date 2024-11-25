@@ -1,3 +1,5 @@
+//! Module containing the main propagation engine of the solver.
+
 pub(crate) mod activation_list;
 pub(crate) mod bool_to_int;
 pub(crate) mod int_var;
@@ -21,10 +23,7 @@ use pindakaas::{
 use tracing::{debug, trace};
 
 use crate::{
-	actions::{
-		decision::DecisionActions, explanation::ExplanationActions, inspection::InspectionActions,
-		trailing::TrailingActions,
-	},
+	actions::{DecisionActions, ExplanationActions, InspectionActions, TrailingActions},
 	brancher::Decision,
 	propagator::reason::Reason,
 	solver::{
@@ -43,6 +42,7 @@ use crate::{
 	BoolView, Clause, Conjunction, IntVal, IntView,
 };
 
+/// Macro to output a trace message when a new literal is registered.
 macro_rules! trace_new_lit {
 	($iv:expr, $def:expr, $lit:expr) => {
 		tracing::debug!(
@@ -62,12 +62,13 @@ macro_rules! trace_new_lit {
 pub(crate) use trace_new_lit;
 
 #[derive(Debug, Default, Clone)]
+/// A propagation engine implementing the [`Propagator`] trait.
 pub struct Engine {
-	/// Storage of the propagators
+	/// Storage of the propagators.
 	pub(crate) propagators: IndexVec<PropRef, BoxedPropagator>,
-	/// Storage of the branchers
+	/// Storage of the branchers.
 	pub(crate) branchers: Vec<BoxedBrancher>,
-	/// Internal State representation of the constraint programming engine
+	/// Internal State representation of the propagation engine.
 	pub(crate) state: State,
 }
 
@@ -94,7 +95,7 @@ pub struct SearchStatistics {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct State {
-	// Solver confifguration
+	/// Solver confifguration
 	pub(crate) config: SolverConfiguration,
 
 	// ---- Trailed Value Infrastructure (e.g., decision variables) ----
@@ -394,6 +395,11 @@ impl SearchStatistics {
 }
 
 impl State {
+	/// Determine whether assigning a literal triggers an event on an integer variable.
+	///
+	/// Returns `None` if the literal does not trigger an event on an integer
+	/// variable. Otherwise, returns the relevant `IntVarRef` and the `IntEvent`
+	/// that is triggered.
 	fn determine_int_event(&mut self, lit: RawLit) -> Option<(IntVarRef, IntEvent)> {
 		if let Some((iv, meaning)) = self.bool_to_int.get(lit.var()) {
 			let (lb, ub) = self.int_vars[iv].get_bounds(self);
@@ -459,14 +465,16 @@ impl State {
 		}
 	}
 
+	/// Returns the current decision level of the solver.
 	fn decision_level(&self) -> u32 {
 		self.trail.decision_level()
 	}
 
-	// Helper method that ensures that all changes are communicated to the solver as clauses.
-	//
-	// The method returns whether any propagations were converted to clauses.
 	#[inline]
+	/// Helper method that ensures that all changes are communicated to the solver
+	/// as clauses.
+	///
+	/// The method returns whether any propagations were converted to clauses.
 	fn ensure_clause_changes(&mut self, propagators: &mut IndexVec<PropRef, BoxedPropagator>) {
 		let queue = mem::take(&mut self.propagation_queue);
 		for lit in queue {
@@ -479,6 +487,7 @@ impl State {
 		}
 	}
 
+	/// Internal method called to trigger a new decision level.
 	fn notify_new_decision_level(&mut self) {
 		self.trail.notify_new_decision_level();
 
@@ -551,6 +560,8 @@ impl State {
 		}
 	}
 
+	/// Enqueue all propagators that are activated because the [`IntEvent`]
+	/// `event` has happened to `int_var`.
 	fn enqueue_int_propagators(
 		&mut self,
 		int_var: IntVarRef,
@@ -566,6 +577,8 @@ impl State {
 		}
 	}
 
+	/// Enqueue all propagators that are activated because `lit` has been
+	/// assigned.
 	fn enqueue_propagators(&mut self, lit: RawLit, skip: Option<PropRef>) {
 		for &prop in self.bool_activation.get(&lit.var()).into_iter().flatten() {
 			if Some(prop) != skip && !self.enqueued[prop] {
@@ -581,6 +594,7 @@ impl State {
 		}
 	}
 
+	/// Register the [`Reason`] to explain why `lit` has been assigned.
 	fn register_reason(&mut self, lit: RawLit, built_reason: Result<Reason, bool>) {
 		match built_reason {
 			Ok(reason) => {
@@ -595,14 +609,22 @@ impl State {
 		}
 	}
 
+	/// Set the number of conflicts after which the solver should switch to using
+	/// VSIDS to make search decisions.
 	pub(crate) fn set_vsids_after(&mut self, conflicts: Option<u32>) {
 		self.config.vsids_after = conflicts;
 	}
 
+	/// Set whether the solver should toggle between VSIDS and a user defined
+	/// search strategy after every restart.
+	///
+	/// Note that this setting is ignored if the solver is set to use VSIDS only.
 	pub(crate) fn set_toggle_vsids(&mut self, enabled: bool) {
 		self.config.toggle_vsids = enabled;
 	}
 
+	/// Set wether the solver should make all search decisions based on the VSIDS
+	/// only.
 	pub(crate) fn set_vsids_only(&mut self, enable: bool) {
 		self.config.vsids_only = enable;
 		self.vsids = enable;

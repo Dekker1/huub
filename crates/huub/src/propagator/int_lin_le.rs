@@ -1,8 +1,12 @@
+//! Propagator for the `int_lin_le` constraint, and its reification. This
+//! constraint enforce that the sum of the products of the variables is less or
+//! equal to a given value.
+
 use itertools::Itertools;
 use pindakaas::Lit as RawLit;
 
 use crate::{
-	actions::initialization::InitializationActions,
+	actions::InitializationActions,
 	helpers::opt_field::OptField,
 	propagator::{conflict::Conflict, ExplanationActions, PropagationActions, Propagator},
 	solver::{
@@ -15,16 +19,31 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Value consistent propagator for the `int_lin_le` or `int_lin_le_imp`
+/// constraint.
+///
+/// `R` should be `0` if the propagator is not refied, or `1` if it is. Other
+/// values are invalid.
 pub(crate) struct IntLinearLessEqBoundsImpl<const R: usize> {
-	vars: Vec<IntView>,               // Variables in the linear inequality
-	max: IntVal,                      // Lower bound of the linear inequality
-	reification: OptField<R, RawLit>, // Reified variable
+	/// Variables that are being summed
+	vars: Vec<IntView>,
+	/// Maximum value of the sum can take
+	max: IntVal,
+	/// Reified variable, if any
+	reification: OptField<R, RawLit>,
 }
 
+/// Type alias for the non-reified version of the [`IntLinearLessEqBoundsImpl`]
+/// propagator.
 pub(crate) type IntLinearLessEqBounds = IntLinearLessEqBoundsImpl<0>;
+
+/// Type alias for the reified version of the [`IntLinearLessEqBoundsImpl`]
+/// propagator.
 pub(crate) type IntLinearLessEqImpBounds = IntLinearLessEqBoundsImpl<1>;
 
 impl IntLinearLessEqBounds {
+	/// Prepare the [`IntLinearLessEqBounds`] propagator to be posted to the
+	/// solver.
 	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
 		vars: VI,
 		mut max: IntVal,
@@ -49,6 +68,8 @@ impl IntLinearLessEqBounds {
 }
 
 impl IntLinearLessEqImpBounds {
+	/// Prepare the [`IntLinearLessEqImpBounds`] propagator to be posted to the
+	/// solver.
 	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
 		vars: VI,
 		mut max: IntVal,
@@ -150,11 +171,17 @@ where
 	}
 }
 
+/// [`Poster`] for a the [`IntLinearLessEqBounds`] or
+/// [`IntLinearLessEqImpBounds`] propagator.
 struct IntLinearLessEqBoundsPoster<const R: usize> {
+	/// Variables that are summed
 	vars: Vec<IntView>,
+	/// Maximum value that the sum of the variables can take
 	max: IntVal,
+	/// Reification variable, if present
 	reification: OptField<R, RawLit>,
 }
+
 impl<const R: usize> Poster for IntLinearLessEqBoundsPoster<R> {
 	fn post<I: InitializationActions>(
 		self,

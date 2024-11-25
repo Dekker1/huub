@@ -1,11 +1,12 @@
+//! Contains the `InitializationContext` struct, which is used to initialize
+//! branchers and propagators to a [`Solver`] and subsequently to the
+//! [`Engine`].
+
 use delegate::delegate;
 use pindakaas::solver::propagation::PropagatingSolver;
 
 use crate::{
-	actions::{
-		decision::DecisionActions, initialization::InitializationActions,
-		inspection::InspectionActions, trailing::TrailingActions,
-	},
+	actions::{DecisionActions, InitializationActions, InspectionActions, TrailingActions},
 	solver::{
 		engine::{
 			activation_list::IntPropCond, int_var::IntVarRef, trail::TrailedInt, Engine, PropRef,
@@ -15,16 +16,20 @@ use crate::{
 	BoolView, IntVal, IntView, LitMeaning, Solver,
 };
 
-/// Reference to the construct that we are intilizing
+/// Reference to the construct that we are initializing.
 pub(crate) enum InitRef {
-	// a brancher
+	/// A brancher
 	Brancher,
-	// a specific propagator
+	/// A specific propagator
 	Propagator(PropRef),
 }
 
+/// Wrapper around a solver that is used to initialize branchers and propagators
+/// to the solver.
 pub(crate) struct InitializationContext<'a, Oracle: 'a> {
+	/// Reference to the construct that we are initializing.
 	pub(crate) init_ref: InitRef,
+	/// The solver to which we are adding the construct.
 	pub(crate) slv: &'a mut Solver<Oracle>,
 }
 

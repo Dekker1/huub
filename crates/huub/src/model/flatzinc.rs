@@ -1,3 +1,5 @@
+//! Module for the creation of a [`Model`] from a [`FlatZinc`] instance.
+
 use std::{
 	cell::RefCell,
 	collections::{hash_map::Entry, HashMap, HashSet},
@@ -87,7 +89,8 @@ where
 		}
 	}
 
-	/// Add a view to the model and the mapping
+	/// Preprocess the [`FlatZinc`] instance to find variables that can be seen as
+	/// views of other variables.
 	fn extract_views(&mut self) -> Result<(), FlatZincError> {
 		// Create a mapping from identifiers to the constraint that defines them
 		let defined_by: HashMap<&S, usize> = self
@@ -109,6 +112,11 @@ where
 		Ok(())
 	}
 
+	/// Preprocess a constraint in the [`FlatZinc`] instance to find variables
+	/// that can be seen as views of other variables.
+	///
+	/// This allows us to avoid creating multiple variables that have to be kept
+	/// consistent using propagators.
 	fn extract_view(
 		&mut self,
 		defined_by: &HashMap<&S, usize>,
@@ -239,7 +247,10 @@ where
 		Ok(())
 	}
 
-	/// Unify variables (e.g., from `bool_eq` and `int_eq` constraints)
+	/// Unify variables in the [`Model`] that are know to be equivalent.
+	///
+	/// This can happen because of `bool_eq` and `int_eq` constraints in the
+	/// [`FlatZinc`] instance.
 	fn unify_variables(&mut self) -> Result<(), FlatZincError> {
 		let mut unify_map = HashMap::<S, Rc<RefCell<Vec<Literal<S>>>>>::new();
 		let unify_map_find = |map: &HashMap<S, Rc<RefCell<Vec<Literal<S>>>>>, a: &Literal<S>| {
@@ -446,6 +457,8 @@ where
 		Ok(())
 	}
 
+	/// Process the [`FlatZinc::constraints`] field and add [`Constraint`] items
+	/// to the [`Model`] to enforce the constraints.
 	fn post_constraints(&mut self) -> Result<(), FlatZincError> {
 		// Traditional relational constraints
 		for (i, c) in self.fzn.constraints.iter().enumerate() {
@@ -1076,6 +1089,7 @@ where
 		(self.prb, self.map, self.stats)
 	}
 
+	/// Extract a [`Vec<Literal>`] from an [`Argument`].
 	fn arg_array(&self, arg: &'a Argument<S>) -> Result<&'a Vec<Literal<S>>, FlatZincError> {
 		match arg {
 			Argument::Array(x) => Ok(x),
@@ -1093,7 +1107,7 @@ where
 		}
 	}
 
-	// Get an array of variable literals from an annotation argument
+	/// Extract a [`Vec<Literal>`] from an [`AnnotationArgument`].
 	fn ann_arg_var_array(
 		&self,
 		arg: &'a AnnotationArgument<S>,
@@ -1125,6 +1139,9 @@ where
 		}
 	}
 
+	/// Process a [`AnnotationCall`] expected to contain a search selection
+	/// strategy, and return a tuple containing (1) the general search strategy,
+	/// and (2) the warm start instructions.
 	fn ann_to_branchings(
 		&mut self,
 		c: &'a AnnotationCall<S>,
@@ -1258,6 +1275,7 @@ where
 		}
 	}
 
+	/// Check whether the given [`Argument`] is an array of length `len`.
 	fn arg_has_length(&self, arg: &Argument<S>, len: usize) -> bool {
 		match arg {
 			Argument::Array(x) => x.len() == len,
@@ -1272,6 +1290,8 @@ where
 		}
 	}
 
+	/// Find the decision variable, i.e. [`ModelView`], associated with the given
+	/// identifier, or create a new one if it doesn't yet exist.
 	fn lookup_or_create_var(&mut self, ident: &S) -> Result<ModelView, FlatZincError> {
 		match self.map.entry(ident.clone()) {
 			Entry::Vacant(e) => {
@@ -1296,6 +1316,9 @@ where
 		}
 	}
 
+	/// Extract a Boolean decision variable from the a [`Literal`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a Boolean decision variable.
 	fn lit_bool(&mut self, lit: &Literal<S>) -> Result<BoolView, FlatZincError> {
 		match lit {
 			Literal::Identifier(ident) => self.lookup_or_create_var(ident).map(|mv| match mv {
@@ -1310,6 +1333,9 @@ where
 		}
 	}
 
+	/// Extract a Boolean parameter from the a [`Literal`] in a [`FlatZinc`]
+	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
+	/// argument was not a Boolean parameter.
 	fn par_bool(&self, lit: &Literal<S>) -> Result<bool, FlatZincError> {
 		match lit {
 			Literal::Identifier(ident) => {
@@ -1331,6 +1357,9 @@ where
 		}
 	}
 
+	/// Extract a Boolean decision variable from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a Boolean decision variable.
 	fn arg_bool(&mut self, arg: &Argument<S>) -> Result<BoolView, FlatZincError> {
 		match arg {
 			Argument::Literal(l) => self.lit_bool(l),
@@ -1341,6 +1370,9 @@ where
 		}
 	}
 
+	/// Extract an [`VariableSelection`] from an [`AnnotationArgument`] in a
+	/// [`FlatZinc`] instance, or return a [`FlatZincError::InvalidArgumentType`]
+	/// if an invalid type.
 	fn ann_var_sel(arg: &AnnotationArgument<S>) -> Result<VariableSelection, FlatZincError> {
 		match arg {
 			AnnotationArgument::Literal(AnnotationLiteral::BaseLiteral(Literal::Identifier(s))) => {
@@ -1370,6 +1402,9 @@ where
 		}
 	}
 
+	/// Extract an [`ValueSelection`] from an [`AnnotationArgument`] in a
+	/// [`FlatZinc`] instance, or return a [`FlatZincError::InvalidArgumentType`]
+	/// if an invalid type.
 	fn ann_val_sel(arg: &AnnotationArgument<S>) -> Result<ValueSelection, FlatZincError> {
 		match arg {
 			AnnotationArgument::Literal(AnnotationLiteral::BaseLiteral(Literal::Identifier(s))) => {
@@ -1398,6 +1433,9 @@ where
 		}
 	}
 
+	/// Extract a integer decision variable from a [`Literal`] in a [`FlatZinc`]
+	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
+	/// argument was not a integer decision variable.
 	fn lit_int(&mut self, lit: &Literal<S>) -> Result<IntView, FlatZincError> {
 		match lit {
 			Literal::Identifier(ident) => self.lookup_or_create_var(ident).map(|mv| match mv {
@@ -1413,6 +1451,9 @@ where
 		}
 	}
 
+	/// Extract a parameter integer value from the a [`Literal`] in a [`FlatZinc`]
+	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
+	/// argument was not an integer parameter.
 	fn par_int(&self, lit: &Literal<S>) -> Result<IntVal, FlatZincError> {
 		match lit {
 			Literal::Identifier(ident) => {
@@ -1435,6 +1476,9 @@ where
 		}
 	}
 
+	/// Extract a integer decision variable from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a integer decision variable.
 	fn arg_int(&mut self, arg: &Argument<S>) -> Result<IntView, FlatZincError> {
 		match arg {
 			Argument::Literal(l) => self.lit_int(l),
@@ -1445,6 +1489,9 @@ where
 		}
 	}
 
+	/// Extract a parameter integer value from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not an integer parameter.
 	fn arg_par_int(&self, arg: &Argument<S>) -> Result<IntVal, FlatZincError> {
 		match arg {
 			Argument::Literal(l) => self.par_int(l),
@@ -1455,6 +1502,9 @@ where
 		}
 	}
 
+	/// Extract a parameter integer set value from the a [`Literal`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a parameter set.
 	fn par_set(&self, lit: &Literal<S>) -> Result<IntSetVal, FlatZincError> {
 		match lit {
 			Literal::Identifier(ident) => {
@@ -1476,6 +1526,9 @@ where
 		}
 	}
 
+	/// Extract a parameter integer set value from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a parameter set.
 	fn arg_par_set(&self, arg: &Argument<S>) -> Result<IntSetVal, FlatZincError>
 	where
 		S: Deref<Target = str> + Clone + Debug,
@@ -1491,6 +1544,7 @@ where
 }
 
 impl Model {
+	/// Create a new [`Model`] instance from a [`FlatZinc`] instance.
 	pub fn from_fzn<S>(
 		fzn: &FlatZinc<S>,
 	) -> Result<(Self, HashMap<S, ModelView>, FlatZincStatistics), FlatZincError>
@@ -1513,6 +1567,7 @@ where
 	Solver<Oracle>: for<'a> From<&'a Cnf>,
 	Oracle::Slv: 'static,
 {
+	/// Create a new [`Solver`] instance from a [`FlatZinc`] instance.
 	pub fn from_fzn<S>(
 		fzn: &FlatZinc<S>,
 		config: &InitConfig,
@@ -1531,24 +1586,39 @@ where
 }
 
 #[derive(Error, Debug)]
+/// Errors that can occur when converting a [`FlatZinc`] instance to a [`Model`]
+/// or [`Solver`] object.
 pub enum FlatZincError {
 	#[error("{0:?} type variables are not supported by huub")]
+	/// FlatZinc instance contained a decision variable with an unsupported type.
 	UnsupportedType(Type),
 	#[error("constraint cannot be constructed using unknown identifier `{0}'")]
+	/// FlatZinc instance contained a constraint with an unknown identifier.
 	UnknownConstraint(String),
 	#[error("constraints with identifiers `{name}' must have {expected} arguments, found {found}")]
+	/// FlatZinc instance contained a constraint with an invalid number of
+	/// arguments.
 	InvalidNumArgs {
+		/// Identifier of the constraint.
 		name: &'static str,
+		/// Number of arguments found.
 		found: usize,
+		/// Number of arguments expected.
 		expected: usize,
 	},
 	#[error("could not find identifier `{0}'")]
+	/// FlatZinc instance used an identifier that was not defined.
 	UnknownIdentifier(String),
 	#[error("argument found of type `{found}', expected `{expected}'")]
+	/// FlatZinc constraint or annotation used an argument of the wrong type.
 	InvalidArgumentType {
+		/// Expected type of the argument.
 		expected: &'static str,
+		/// Type of the argument found.
 		found: String,
 	},
 	#[error("error reformulating generated model `{0}'")]
+	/// Error that occorred when converting a generated [`Model`] to a [`Solver`]
+	/// object.
 	ReformulationError(#[from] ReformulationError),
 }

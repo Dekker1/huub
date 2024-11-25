@@ -1,3 +1,6 @@
+//! Module containing data structures for the activation of propagators based on
+//! changes to decision variables.
+
 use std::{mem, ops::Add};
 
 use crate::solver::engine::PropRef;
@@ -16,10 +19,20 @@ use crate::solver::engine::PropRef;
 /// beginning of the UpperBound condition, and then continue from the beginning
 /// of the Bound condition to the end of the list.
 pub(crate) struct ActivationList {
+	/// The list of propagators that are to be enqueue based on different
+	/// propagation conditions.
 	activations: Vec<PropRef>,
+	/// The index for the first propagator to be activated when an event triggers
+	/// [`IntPropCond::LowerBound`].
 	lower_bound_idx: u32,
+	/// The index for the first propagator to be activated when an event triggers
+	/// [`IntPropCond::UpperBound`].
 	upper_bound_idx: u32,
+	/// The first index for the propagators to be activated when an event triggers
+	/// [`IntPropCond::Bounds`].
 	bounds_idx: u32,
+	/// The index for the first propagator to be activated when an event triggers
+	/// [`IntPropCond::Domain`].
 	domain_idx: u32,
 }
 

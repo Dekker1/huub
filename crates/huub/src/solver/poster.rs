@@ -1,12 +1,19 @@
+//! Module containing definitions used to register branchers and propagators to
+//! [`Solver`] and subsequently to the [`Engine`].
+
 use crate::{
-	actions::initialization::InitializationActions,
+	actions::InitializationActions,
 	brancher::Brancher,
 	propagator::Propagator,
 	solver::engine::{queue::PriorityLevel, solving_context::SolvingContext, State},
 	ReformulationError,
 };
 
+/// Type alias to represent [`Propagator`] contained in a [`Box`], that is used
+/// by [`Engine`].
 pub(crate) type BoxedPropagator = Box<dyn for<'a> Propagator<SolvingContext<'a>, State>>;
+/// Type alias to represent [`Brancher`] contained in a [`Box`], that is used by
+/// [`Engine`].
 pub(crate) type BoxedBrancher = Box<dyn for<'a> Brancher<SolvingContext<'a>>>;
 
 /// The trait used called to registering a propagator with the solver.
@@ -26,8 +33,10 @@ pub(crate) trait Poster {
 	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError>;
 }
 
+/// Information about how a propagator should be enqueued by the [`Engine`].
 pub(crate) struct QueuePreferences {
-	/// Whether to immediately add the propagator to the queue when the propagator is posted
+	/// Whether to immediately add the propagator to the queue when the propagator
+	/// is posted
 	pub(crate) enqueue_on_post: bool,
 	/// Priority level in the queue used for the propagator
 	pub(crate) priority: PriorityLevel,

@@ -1,7 +1,10 @@
+//! Propagators for the `array_int_minimum` constraint, which enforces that a
+//! variable takes the minimum value of an array of variables.
+
 use itertools::Itertools;
 
 use crate::{
-	actions::{explanation::ExplanationActions, initialization::InitializationActions},
+	actions::{ExplanationActions, InitializationActions},
 	propagator::{conflict::Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
@@ -13,12 +16,17 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Bounds cosistent propagator for the `array_int_minimum` constraint.
 pub(crate) struct ArrayIntMinimumBounds {
-	vars: Vec<IntView>, // Variables in the minimum constraints
-	min: IntView,       // Variable that stores the minimum value
+	/// Set of variable from which the mimimum must be taken
+	vars: Vec<IntView>,
+	/// Variable that represents the minimum value
+	min: IntView,
 }
 
 impl ArrayIntMinimumBounds {
+	/// Prepare a new [`ArrayIntMinimumBounds`] propagator to be posted to the
+	/// solver.
 	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
 		vars: VI,
 		min: IntView,
@@ -77,10 +85,14 @@ where
 	}
 }
 
+/// [`Poster`] for the [`ArrayIntMinimumBounds`] propagator.
 struct ArrayIntMinimumBoundsPoster {
+	/// Set of variable from which the mimimum must be taken
 	vars: Vec<IntView>,
+	/// Variable that represents the minimum value
 	min: IntView,
 }
+
 impl Poster for ArrayIntMinimumBoundsPoster {
 	fn post<I: InitializationActions>(
 		self,

@@ -1,7 +1,11 @@
+//! Propagators for the `array_var_int_element` constraint, which enforces that
+//! a resulting variable equals an element of an array of variables, chosen by
+//! an index variable.
+
 use itertools::Itertools;
 
 use crate::{
-	actions::{explanation::ExplanationActions, initialization::InitializationActions},
+	actions::{ExplanationActions, InitializationActions},
 	propagator::{conflict::Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
@@ -13,15 +17,23 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Bounds consistent propagator for the `array_var_int_element` constraint.
 pub(crate) struct ArrayVarIntElementBounds {
-	vars: Vec<IntView>,      // Variables to be selected
-	result: IntView,         // The selected variable
-	index: IntView,          // Variable that stores the index of the selected variable
-	min_support: TrailedInt, // The minimum support of the selected variable
-	max_support: TrailedInt, // The maximum support of the selected variable
+	/// Array of variables from which the element is selected
+	vars: Vec<IntView>,
+	/// Variable that represent the result of the selection
+	result: IntView,
+	/// Variable that represent the index of the selected variable
+	index: IntView,
+	/// The index of the variable that supports the lower bound of the result
+	min_support: TrailedInt,
+	/// The index of the variable that supports the upper bound of the result
+	max_support: TrailedInt,
 }
 
 impl ArrayVarIntElementBounds {
+	/// Prepare a new [`ArrayVarIntElementBounds`] propagator to be posted to the
+	/// solver.
 	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
 		vars: VI,
 		result: IntView,
@@ -181,11 +193,16 @@ where
 	}
 }
 
+/// [`Poster`] for the [`ArrayVarIntElementBounds`] propagator.
 struct ArrayVarIntElementBoundsPoster {
+	/// The variable representing the index
 	index: IntView,
+	/// The result variable
 	result: IntView,
+	/// The array of variables
 	vars: Vec<IntView>,
 }
+
 impl Poster for ArrayVarIntElementBoundsPoster {
 	fn post<I: InitializationActions>(
 		self,

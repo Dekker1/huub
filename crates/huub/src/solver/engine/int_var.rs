@@ -1,3 +1,5 @@
+//! Module containing the representation of integer variables within the solver.
+
 use std::{
 	collections::{
 		hash_map::{self, VacantEntry},
@@ -12,7 +14,7 @@ use pindakaas::{solver::propagation::PropagatingSolver, Lit as RawLit, Var as Ra
 use rangelist::RangeList;
 
 use crate::{
-	actions::trailing::TrailingActions,
+	actions::TrailingActions,
 	solver::{
 		engine::{trail::TrailedInt, Engine},
 		view::{BoolViewInner, IntViewInner},
@@ -59,6 +61,10 @@ pub(crate) struct IntVar {
 }
 
 impl IntVar {
+	/// Create a new integer variable within the given solver, which the given
+	/// domain. The `order_encoding` and `direct_encoding` parameters determine
+	/// whether literals to reason about the integer variables are created eagerly
+	/// or lazily.
 	pub(crate) fn new_in<Oracle: PropagatingSolver<Engine>>(
 		slv: &mut Solver<Oracle>,
 		domain: RangeList<IntVal>,
@@ -175,6 +181,13 @@ impl IntVar {
 		IntView(IntViewInner::VarRef(iv))
 	}
 
+	/// Returns the meaning of a literal in the context of this integer variable.
+	///
+	/// # Warning
+	///
+	/// This method can only be used with literals that were eagerly created for
+	/// this integer variable. Lazy literals should be mapped using
+	/// [`BoolToIntMap`].
 	pub(crate) fn lit_meaning(&self, lit: RawLit) -> LitMeaning {
 		let var = lit.var();
 		let ret = |l: LitMeaning| {
@@ -215,6 +228,13 @@ impl IntVar {
 	}
 
 	#[inline]
+	/// Method used to normalize a [`LitMeaning`] to find perform a lookup.
+	///
+	/// This method will replace any [`LitMeaning::Eq`] or [`LitMeaning::NotEq`]
+	/// meaning asking for the global lower or upper bound with the appropriate
+	/// [`LitMeaning::Less`] meaning. It will also negate any
+	/// [`LitMeaning::NotEq`] and [`LitMeaning::GreaterEq`] and return a boolean
+	/// indicating if the meaning was negated.
 	fn normalize_lit_meaning(
 		&self,
 		mut lit: LitMeaning,
@@ -240,7 +260,8 @@ impl IntVar {
 		(lit, negate)
 	}
 
-	/// Access the Boolean literal with the given meaning, creating it if it is not yet available.
+	/// Access the Boolean literal with the given meaning, creating it if it is
+	/// not yet available.
 	pub(crate) fn bool_lit(
 		&mut self,
 		bv: LitMeaning,
@@ -606,71 +627,126 @@ impl IntVar {
 	variant_size_differences,
 	reason = "TODO: Investigate if using Box improves performance"
 )]
+/// The storage used to store the variables for the inequality conditions.
 pub(crate) enum OrderStorage {
-	/// Variables for all inequality conditions are eagerly created and stored in order
+	/// Variables for all inequality conditions are eagerly created and stored in
+	/// order.
 	Eager {
+		/// A trailed integer that represents the currently lower bound of the
+		/// variable.
 		lower_bound: TrailedInt,
+		/// The range of Boolean variables that represent the inequality conditions.
 		storage: VarRange,
 	},
-	/// Variables for inequality conditions are lazily created and stored in a hashmap
+	/// Variables for inequality conditions are lazily created and specialized
+	/// noded structure, a [`LazyOrderStorage`].
 	Lazy(LazyOrderStorage),
 }
 
+/// The definition given to a lazily created literal.
 pub(crate) struct LazyLitDef {
+	/// The meaning that the literal is meant to represent.
 	pub(crate) meaning: LitMeaning,
+	/// The variable that represent:
+	/// - if `meaning` is `LitMeaning::Less(j)`, then `prev` contains the literal
+	///   `< i` where `i` is the value right before `j` in the storage.
+	/// - if `meaning` is `LitMeaning::Eq(k)`, then `prev` contains the literal
+	///   `<j`.
 	pub(crate) prev: Option<RawVar>,
+	/// The variable that represent the literal `< k` where `k` is the value right
+	/// after the value represented by the literal.
 	pub(crate) next: Option<RawVar>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A storage structure to manage lazily created order literals for an integer
+/// variable.
 pub(crate) struct LazyOrderStorage {
+	/// The index of the node with the minimum value in the storage.
 	min_index: u32,
+	/// The index of the node with the maximum value in the storage.
 	max_index: u32,
+	/// The index of the node that currently represents the lower bound of the
+	/// integer variable.
 	lb_index: TrailedInt,
+	/// The index of the node that currently represents the upper bound of the
+	/// integer variable.
 	ub_index: TrailedInt,
+	/// The storage of all currently created nodes containing the order literals
+	/// for the integer variable.
 	storage: Vec<OrderNode>,
 }
 
+/// Type alias for an iterator that yields the ranges of a [`RangeList`], which
+/// is used to represent the domains of an integer variable.
 type RangeIter<'a> = Peekable<
 	Map<
 		<&'a RangeList<IntVal> as IntoIterator>::IntoIter,
 		fn(RangeInclusive<&'a IntVal>) -> RangeInclusive<IntVal>,
 	>,
 >;
+
 #[derive(Debug)]
+/// An entry in [`OrderStorage`] that can be used to access the representation
+/// of an inequality condition, or insert a new literal to represent the
+/// condition otherwise.
 enum OrderEntry<'a> {
+	/// Entry already exists and was eagerly created.
 	Eager(&'a VarRange, usize),
+	/// Entry already exists and was lazily created.
 	Occupied {
+		/// Reference to the storage where the entry is stored.
 		storage: &'a mut LazyOrderStorage,
+		/// The index of the node in the storage that the entry points to.
 		index: u32,
+		/// An iterator pointing at the range in the domain in which the value of
+		/// which the value of the entry is part.
 		range_iter: RangeIter<'a>,
 	},
+	/// Entry does not exist and can be lazily created.
 	Vacant {
+		/// Reference to the storage where the new entry will be created.
 		storage: &'a mut LazyOrderStorage,
+		/// The index of the node that contains the value right before the new entry
+		/// that will be created.
 		prev_index: IntVal,
+		/// An iterator pointing at the range in the domain in which the value of
+		/// which the value of the new entry is part.
 		range_iter: RangeIter<'a>,
+		/// The value for which the entry will be created.
 		val: IntVal,
 	},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Type useed to store individual entries in [`LazyOrderStorage`].
 pub(crate) struct OrderNode {
+	/// The value for which `var` represents `x < val`.
 	val: IntVal,
+	/// The variable representing `x < val`.
 	var: RawVar,
+	/// Whether there is a node with a value less than `val`.
 	has_prev: bool,
+	/// The index of the node with a value less than `val`.
 	prev: u32,
+	/// Whether there is a node with a value greater than `val`.
 	has_next: bool,
+	/// The index of the node with a value greater than `val`.
 	next: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A direction to search in.
 enum SearchDirection {
+	/// Search from low to high.
 	Increasing,
+	/// Search from high to low.
 	Decreasing,
 }
 
 impl LazyOrderStorage {
-	// Find the the index of the node that contains the value or the value "before" the value
+	/// Find the the index of the node that contains the value or the node
+	/// "before" the value.
 	fn find_index(&self, start: u32, direction: SearchDirection, val: IntVal) -> u32 {
 		let mut i = start;
 		match direction {
@@ -688,10 +764,13 @@ impl LazyOrderStorage {
 		i
 	}
 
+	/// Returns `true` if the storage is empty, `false` otherwise.
 	fn is_empty(&self) -> bool {
 		self.storage.is_empty()
 	}
 
+	/// Returns the node with the minimum [`OrderNode::val`] present in the
+	/// storage, or [`None`] if the storage is empty.
 	fn min(&self) -> Option<&OrderNode> {
 		if self.is_empty() {
 			None
@@ -700,6 +779,8 @@ impl LazyOrderStorage {
 		}
 	}
 
+	/// Returns the node with the maximum [`OrderNode::val`] present in the
+	/// storage, or [`None`] if the storage is empty.
 	fn max(&self) -> Option<&OrderNode> {
 		if self.is_empty() {
 			None
@@ -723,7 +804,11 @@ impl IndexMut<u32> for LazyOrderStorage {
 }
 
 impl OrderStorage {
-	// Find current domain range and calculate the offset in the VarRange
+	/// Returns the lowest integer value `j`, for which `< i` is equivalent to `<
+	/// j` in the given `domain. In addition it returns the index of the range in
+	/// `domain` in which `j` is located, and calculate the offset of the
+	/// representation `< j` in a VarRange when the order literals are eagerly
+	/// created.
 	fn resolve_val(domain: &RangeList<IntVal>, val: IntVal) -> (IntVal, usize, RangeIter) {
 		let mut offset = -1; // -1 to account for the lower bound
 		let mut it = domain.iter().peekable();
@@ -744,6 +829,14 @@ impl OrderStorage {
 		(real_val, offset as usize, it)
 	}
 
+	/// Locate the position in the [`OrderStorage`] that would be used to store
+	/// the representation of the condition `< i`. The method will return a
+	/// [`OrderEntry`] object that can be used to access the condition as a
+	/// [`RawVar`] if it already exists, or insert a new literal to represent the
+	/// condition otherwise.
+	///
+	/// The given `domain` is (in the case of eager creation) used to determine
+	/// the offset of the variable in the `VarRange`.
 	fn entry<'a>(&'a mut self, domain: &'a RangeList<IntVal>, val: IntVal) -> OrderEntry<'a> {
 		let (val, offset, range_iter) = Self::resolve_val(domain, val);
 
@@ -786,6 +879,11 @@ impl OrderStorage {
 		}
 	}
 
+	/// Return the [`RawVar`] that represent the condition `< i`, if it already
+	/// exists.
+	///
+	/// The given `domain` is (in the case of eager creation) used to determine
+	/// the offset of the variable in the `VarRange`.
 	fn find(&self, domain: &RangeList<IntVal>, val: IntVal) -> Option<RawVar> {
 		let (val, offset, _) = Self::resolve_val(domain, val);
 
@@ -811,6 +909,12 @@ impl OrderStorage {
 }
 
 impl OrderEntry<'_> {
+	/// Extract the [`RawVar`] if the entry is occupied, or insert a new
+	/// variable using the given function.
+	///
+	/// Note that the function is called with the integer value `i`, where the
+	/// variable will represent `< i`, the previous variable before `i` and the
+	/// variable after `i`, if they exist.
 	fn or_insert_with(
 		self,
 		f: impl FnOnce(IntVal, Option<RawVar>, Option<RawVar>) -> RawVar,
@@ -906,6 +1010,10 @@ impl OrderEntry<'_> {
 		}
 	}
 
+	/// Forward the entry to the entry for next value in the domain.
+	///
+	/// Note that it is assumed that a next value exists in the domain, and this
+	/// method will panic otherwise.
 	fn next_value(self) -> Self {
 		match self {
 			OrderEntry::Eager(vars, offset) => OrderEntry::Eager(vars, offset + 1),
@@ -979,6 +1087,9 @@ impl OrderEntry<'_> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// The structure that stores the equality conditions. Equality conditions can
+/// either be eagerly crated, and stored as a range of variables, or lazily
+/// created and stored in a [`HashMap`] once created.
 pub(crate) enum DirectStorage {
 	/// Variables for all equality conditions are eagerly created and stored in order
 	Eager(VarRange),
@@ -986,12 +1097,25 @@ pub(crate) enum DirectStorage {
 	Lazy(HashMap<IntVal, RawVar>),
 }
 
+/// An entry in the [`DirectStorage`] that can be used to access the
+/// representation of an equality condition, or insert a new literal to
+/// represent the condition otherwise.
 enum DirectEntry<'a> {
+	/// The condition is already stored in the [`DirectStorage`].
 	Occupied(BoolViewInner),
+	/// The condition is not yet stored in the [`DirectStorage`].
 	Vacant(VacantEntry<'a, IntVal, RawVar>),
 }
 
 impl DirectStorage {
+	/// Locate the position in the [`DirectStorage`] that would be used to store
+	/// the representation of the condition `= i`. The method will return a
+	/// [`DirectEntry`] object that can be used to access the condition as a
+	/// [`BoolViewInner`] if it already exists, or insert a new literal to
+	/// represent the condition otherwise.
+	///
+	/// The given `domain` is (in the case of eager creation) used to determine
+	/// the offset of the variable in the `VarRange`.
 	fn entry(&mut self, domain: &RangeList<IntVal>, i: IntVal) -> DirectEntry<'_> {
 		match self {
 			DirectStorage::Eager(vars) => {
@@ -1036,6 +1160,11 @@ impl DirectStorage {
 		}
 	}
 
+	/// Return the [`BoolViewInner`] that represent the condition `= i`, if it
+	/// already exists.
+	///
+	/// The given `domain` is (in the case of eager creation) used to determine
+	/// the offset of the variable in the `VarRange`.
 	fn find(&self, domain: &RangeList<IntVal>, i: IntVal) -> Option<BoolViewInner> {
 		match self {
 			DirectStorage::Eager(vars) => {
@@ -1071,6 +1200,8 @@ impl DirectStorage {
 }
 
 impl DirectEntry<'_> {
+	/// Extract the [`BoolViewInner`] if the entry is occupied, or insert a new
+	/// variable using the given function.
 	fn or_insert_with(self, f: impl FnOnce() -> RawVar) -> BoolViewInner {
 		match self {
 			DirectEntry::Occupied(bv) => bv,
@@ -1084,14 +1215,25 @@ impl DirectEntry<'_> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// The meaning of a literal in the context of a [`IntVar`] `x`.
 pub enum LitMeaning {
+	/// Literal representing the condition `x = i`.
 	Eq(IntVal),
+	/// Literal representing the condition `x ≠ i`.
 	NotEq(IntVal),
+	/// Literal representing the condition `x ≥ i`.
 	GreaterEq(IntVal),
+	/// Literal representing the condition `x < i`.
 	Less(IntVal),
 }
 
 impl LitMeaning {
+	/// Returns the clauses that can be used to define the given literal according
+	/// to the meaning `self`.
+	///
+	/// Note this method is only intended to be used to define positive literals,
+	/// and it is thus assumed to be unreachable to be called on
+	/// [`LitMeaning::NotEq`] or [`LitMeaning::GreaterEq`].
 	pub(crate) fn defining_clauses(
 		&self,
 		lit: RawLit,

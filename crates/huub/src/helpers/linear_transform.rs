@@ -1,3 +1,5 @@
+//! Methods to perform linear transformations.
+
 use std::ops::{Add, Mul, Neg};
 
 use rangelist::RangeList;
@@ -5,8 +7,14 @@ use rangelist::RangeList;
 use crate::{helpers::div_ceil, IntVal, LitMeaning, NonZeroIntVal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// An integer linear transformation of a discrete value.
+///
+/// The transformation will take a discrete value `x` and transform it to `scale
+/// * x + offset`. The transformation can also be reversed.
 pub struct LinearTransform {
+	/// The multiplicative scale.
 	pub(crate) scale: NonZeroIntVal,
+	/// The additive offset.
 	pub(crate) offset: IntVal,
 }
 
@@ -27,6 +35,7 @@ impl LinearTransform {
 		}
 	}
 
+	/// Return whether the scale applied by the linear transformation is positive.
 	pub(crate) fn positive_scale(&self) -> bool {
 		self.scale.get() > 0
 	}
@@ -36,7 +45,7 @@ impl LinearTransform {
 		(val * self.scale.get()) + self.offset
 	}
 
-	/// Perform the linear tranformation for a `LitMeaning`.
+	/// Perform the linear tranformation on a `LitMeaning`.
 	pub fn transform_lit(&self, mut lit: LitMeaning) -> LitMeaning {
 		let mut transformer = *self;
 		if !self.positive_scale() {
@@ -114,6 +123,7 @@ impl LinearTransform {
 		}
 	}
 
+	/// Reverse the linear transformation on a set of integer values.
 	pub(crate) fn rev_transform_mask(&self, mask: &RangeList<IntVal>) -> RangeList<IntVal> {
 		let get_val = |meaning| match meaning {
 			LitMeaning::GreaterEq(i) => i,

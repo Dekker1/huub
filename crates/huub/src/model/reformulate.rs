@@ -1,3 +1,6 @@
+//! Data structures used for the reformulation process of creating a [`Solver`]
+//! object from a [`Model`].
+
 use std::collections::HashMap;
 
 use pindakaas::{solver::propagation::PropagatingSolver, Var as RawVar};
@@ -17,8 +20,11 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+/// Configuration object for the reformulation process of creating a [`Solver`]
+/// object from a [`Model`].
 pub struct InitConfig {
-	/// The maximum cardinality of the domain of an integer variable before its order encoding is created lazily.
+	/// The maximum cardinality of the domain of an integer variable before its
+	/// order encoding is created lazily.
 	int_eager_limit: Option<usize>,
 	/// Whether to enable restarts in the oracle solver.
 	restart: bool,
@@ -27,22 +33,30 @@ pub struct InitConfig {
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
+/// Error type used during the reformulation process of creating a [`Solver`]
+/// object from a [`Model`].
 pub enum ReformulationError {
 	#[error("The expression is trivially unsatisfiable")]
+	/// Error used when the [`Model`] is found to be trivially unsatisfiable.
 	TrivialUnsatisfiable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Representation for the keys of the `VariableMap`.
 enum Variable {
+	/// Boolean variable in the [`Model`].
 	Bool(RawVar),
+	/// Integer variable in the [`Model`].
 	Int(IntVar),
 }
 
 /// A reformulation mapping helper that automatically maps variables to
-/// themselves unless otherwise specified
+/// themselves unless otherwise specified.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct VariableMap {
 	// Note the "to" of the mapping will likely need to be appended
+	/// The internal mapping from that is used to store the mapping of variables
+	/// from the model to the solver.
 	map: HashMap<Variable, SolverView>,
 }
 
@@ -93,6 +107,7 @@ impl From<RawVar> for Variable {
 		Self::Bool(value)
 	}
 }
+
 impl From<IntVar> for Variable {
 	fn from(value: IntVar) -> Self {
 		Self::Int(value)
@@ -100,6 +115,7 @@ impl From<IntVar> for Variable {
 }
 
 impl VariableMap {
+	/// Lookup the [`SolverView`] to which the given model [`ModelView`] maps.
 	pub fn get<Oracle: PropagatingSolver<Engine>>(
 		&self,
 		slv: &mut Solver<Oracle>,
@@ -111,6 +127,8 @@ impl VariableMap {
 		}
 	}
 
+	/// Lookup the solver [`BoolView`] to which the given model [`bool::BoolView`]
+	/// maps.
 	pub fn get_bool<Oracle: PropagatingSolver<Engine>>(
 		&self,
 		slv: &mut Solver<Oracle>,
@@ -149,6 +167,8 @@ impl VariableMap {
 		}
 	}
 
+	/// Lookup the solver [`IntView`] to which the given model [`int::IntView`]
+	/// maps.
 	pub fn get_int<Oracle: PropagatingSolver<Engine>>(
 		&self,
 		slv: &mut Solver<Oracle>,
@@ -178,6 +198,8 @@ impl VariableMap {
 		}
 	}
 
+	/// Insert how an integer variable in the model is being mapped to an integer
+	/// view in the solver.
 	pub(crate) fn insert_int(&mut self, index: IntVar, elem: IntView) {
 		let _ = self.map.insert(index.into(), elem.into());
 	}
@@ -186,6 +208,8 @@ impl VariableMap {
 		dead_code,
 		reason = "TODO: investigate whether this can be used for SAT rewriting"
 	)]
+	/// Insert a Boolean variable in the model that is being remapped to a
+	/// different Boolean view in the solver.
 	pub(crate) fn insert_bool(&mut self, index: RawVar, elem: BoolView) {
 		let _ = self.map.insert(index.into(), elem.into());
 	}

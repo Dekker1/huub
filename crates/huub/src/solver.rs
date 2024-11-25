@@ -1,3 +1,5 @@
+//! Module containing the central solving infrastructure.
+
 pub(crate) mod engine;
 pub(crate) mod initialization_context;
 pub(crate) mod poster;
@@ -20,10 +22,7 @@ use poster::BrancherPoster;
 use tracing::{debug, trace};
 
 use crate::{
-	actions::{
-		decision::DecisionActions, explanation::ExplanationActions, inspection::InspectionActions,
-		trailing::TrailingActions,
-	},
+	actions::{DecisionActions, ExplanationActions, InspectionActions, TrailingActions},
 	solver::{
 		engine::{
 			int_var::{IntVarRef, LazyLitDef, OrderStorage},
@@ -33,20 +32,23 @@ use crate::{
 		},
 		initialization_context::{InitRef, InitializationContext},
 		poster::Poster,
-		value::{AssumptionChecker, ConstantFailure, Valuation, Value},
+		value::{AssumptionChecker, NoAssumptions, Valuation, Value},
 		view::{BoolViewInner, IntView, IntViewInner, SolverView},
 	},
 	BoolView, IntVal, LitMeaning, ReformulationError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Type of the optimization objective
 pub enum Goal {
+	/// Maximize the value of the given objective
 	Maximize,
+	/// Minimize the value of the given objective
 	Minimize,
 }
 
-/// Statistics related to the initialization of the solver
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Statistics related to the initialization of the solver
 pub struct InitStatistics {
 	// TODO
 	// /// Number of (non-view) boolean variables present in the solver
@@ -58,19 +60,29 @@ pub struct InitStatistics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Result of a solving attempt
 pub enum SolveResult {
+	/// The solver has found a solution.
 	Satisfied,
+	/// The solver has proven that the problem is unsatisfiable.
 	Unsatisfiable,
+	/// The solver that no more/better solutions can be found.
 	Complete,
+	/// The solver was interrupted before a result could be reached.
 	Unknown,
 }
 
 #[derive(Clone)]
+/// The main solver object that is used to interact with the LCG solver.
 pub struct Solver<Oracle = PropagatingCadical<Engine>> {
+	/// The inner solver that has been extended with the propagation [`Engine`]
+	/// object.
 	pub(crate) oracle: Oracle,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Structure holding the options using to configure the solver during its
+/// initialization.
 pub(crate) struct SolverConfiguration {
 	/// Switch between the activity-based search heuristic and the user-specific search heuristic after each restart.
 	///
@@ -89,9 +101,11 @@ fn trace_learned_clause(clause: &mut dyn Iterator<Item = RawLit>) {
 }
 
 impl InitStatistics {
+	/// Number of integer variables present in the solver
 	pub fn int_vars(&self) -> usize {
 		self.int_vars
 	}
+	/// Number of propagators present in the solver
 	pub fn propagators(&self) -> usize {
 		self.propagators
 	}
@@ -102,6 +116,13 @@ where
 	Oracle: PropagatingSolver<Engine>,
 	Oracle::Slv: LearnCallback,
 {
+	/// Set a callback function used to extract learned clauses up to a given
+	/// length from the solver.
+	///
+	/// # Warning
+	///
+	/// Subsequent calls to this method override the previously set
+	/// callback function.
 	pub fn set_learn_callback<F: FnMut(&mut dyn Iterator<Item = RawLit>) + 'static>(
 		&mut self,
 		cb: Option<F>,
@@ -128,12 +149,32 @@ where
 {
 	delegate! {
 		to self.oracle.solver_mut() {
+			/// Set a callback function used to indicate a termination requirement to the
+			/// solver.
+			///
+			/// The solver will periodically call this function and check its return value
+			/// during the search. Subsequent calls to this method override the previously
+			/// set callback function.
+			///
+			/// # Warning
+			///
+			/// Subsequent calls to this method override the previously set
+			/// callback function.
 			pub fn set_terminate_callback<F: FnMut() -> SlvTermSignal + 'static>(&mut self, cb: Option<F>);
 		}
 	}
 }
 
 impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
+	/// Add a brancher to the solver.
+	///
+	/// This method is called as part of the reformulation process of
+	/// [`crate::Model`] to [`Solver`]. This method accepts a [`BrancherPoster`]
+	/// implementation that is used to finalize the brancher and subscribe it to
+	/// any relevant variables.
+	///
+	/// Note that during the search process the branchers will be asked for
+	/// decisions in the order they were added to the solver.
 	pub(crate) fn add_brancher<P: BrancherPoster>(&mut self, poster: P) {
 		let mut actions = InitializationContext {
 			slv: self,
@@ -194,6 +235,12 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 		self.add_clause(clause)
 	}
 
+	/// Add a propagator to the solver.
+	///
+	/// This method is called as part of the reformulation process of
+	/// [`crate::Model`] to [`Solver`]. This method accepts a [`Poster`]
+	/// implementation that is used to finalize the propagator and subscribe it to
+	/// any relevant variables.
 	pub(crate) fn add_propagator<P: Poster>(
 		&mut self,
 		poster: P,
@@ -343,10 +390,12 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 		}
 	}
 
+	/// Access the inner [`Engine`] object.
 	pub(crate) fn engine(&self) -> &Engine {
 		self.oracle.propagator()
 	}
 
+	/// Mutably access the inner [`Engine`] object.
 	pub(crate) fn engine_mut(&mut self) -> &mut Engine {
 		self.oracle.propagator_mut()
 	}
@@ -377,6 +426,7 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 		DecisionActions::get_int_lit(self, var, meaning)
 	}
 
+	/// Access the initilization statistics of the [`Solver`] object.
 	pub fn init_statistics(&self) -> InitStatistics {
 		InitStatistics {
 			int_vars: self.engine().state.int_vars.len(),
@@ -389,17 +439,19 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 		self.oracle.into_parts().0
 	}
 
+	/// Access the search statistics for the search process up to this point.
 	pub fn search_statistics(&self) -> &SearchStatistics {
 		&self.engine().state.statistics
 	}
 
-	/// Try and find a solution to the problem for which the Solver was initialized.
+	/// Try and find a solution to the problem for which the Solver was
+	/// initialized.
 	pub fn solve(&mut self, on_sol: impl FnMut(&dyn Valuation)) -> SolveResult {
 		self.solve_assuming([], on_sol, |_| {})
 	}
 
-	/// Try and find a solution to the problem for which the Solver was initialized, given a list of
-	/// Boolean assumptions.
+	/// Try and find a solution to the problem for which the Solver was
+	/// initialized, given a list of Boolean assumptions.
 	pub fn solve_assuming(
 		&mut self,
 		assumptions: impl IntoIterator<Item = BoolView>,
@@ -416,7 +468,7 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 			})
 			.collect()
 		else {
-			on_fail(&ConstantFailure);
+			on_fail(&NoAssumptions);
 			return SolveResult::Unsatisfiable;
 		};
 
@@ -462,8 +514,16 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 
 	delegate! {
 		to self.engine_mut().state {
+			/// Set whether the solver should toggle between VSIDS and a user defined
+			/// search strategy after every restart.
+			///
+			/// Note that this setting is ignored if the solver is set to use VSIDS only.
 			pub fn set_toggle_vsids(&mut self, enable: bool);
+			/// Set the number of conflicts after which the solver should switch to using
+			/// VSIDS to make search decisions.
 			pub fn set_vsids_after(&mut self, conflicts: Option<u32>);
+			/// Set wether the solver should make all search decisions based on the VSIDS
+			/// only.
 			pub fn set_vsids_only(&mut self, enable: bool);
 		}
 	}

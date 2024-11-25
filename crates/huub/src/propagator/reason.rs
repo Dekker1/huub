@@ -1,10 +1,13 @@
+//! Module containing the definitions for reasoning about why changes to
+//! decision variables were made.
+
 use std::{iter::once, marker::PhantomData, mem};
 
 use index_vec::IndexVec;
 use pindakaas::Lit as RawLit;
 
 use crate::{
-	actions::explanation::ExplanationActions,
+	actions::ExplanationActions,
 	solver::{
 		engine::{PropRef, State},
 		poster::BoxedPropagator,
@@ -14,7 +17,8 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// A `ReasonBuilder` whose result is cached so it can be used multiple times
+/// A `ReasonBuilder` whose result is cached so it can be used multiple times,
+/// and is only evaluated once used.
 pub(crate) enum CachedReason<A: ExplanationActions, R: ReasonBuilder<A>> {
 	/// A evaluated reason that can be reused
 	Cached(Result<Reason, bool>),
@@ -23,26 +27,30 @@ pub(crate) enum CachedReason<A: ExplanationActions, R: ReasonBuilder<A>> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// A note that the mentioned propagator will compute the `Reason` if requested.
 pub(crate) struct LazyReason(pub(crate) PropRef, pub(crate) u64);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// A conjunction of literals that implies a change in the state
 pub(crate) enum Reason {
 	/// A promise that a given propagator will compute a causation of the change
-	/// when given the attached data
+	/// when given the attached data.
 	Lazy(PropRef, u64),
-	/// A conjunction of literals forming the causation of the change
+	/// A conjunction of literals forming the causation of the change.
 	Eager(Box<[RawLit]>),
+	/// A single literal that is the causation of the change.
 	Simple(RawLit),
 }
 
 /// A trait for types that can be used to construct a `Reason`
 pub(crate) trait ReasonBuilder<A: ExplanationActions + ?Sized> {
-	/// Construct a `Reason`, or return a Boolean indicating that the reason is trivial
+	/// Construct a `Reason`, or return a Boolean indicating that the reason is
+	/// trivial.
 	fn build_reason(self, actions: &mut A) -> Result<Reason, bool>;
 }
 
 impl<A: ExplanationActions, R: ReasonBuilder<A>> CachedReason<A, R> {
+	/// Create a new [`CachedReason`] from a [`ReasonBuilder`].
 	pub(crate) fn new(builder: R) -> Self {
 		CachedReason::Builder((builder, PhantomData))
 	}
@@ -69,6 +77,7 @@ impl Reason {
 		}
 	}
 
+	/// Collect a conjunction of `BoolView` from an iterator into a `Reason`.
 	pub(crate) fn from_iter<I: IntoIterator<Item = BoolView>>(iter: I) -> Result<Self, bool> {
 		let lits = Result::<Vec<_>, _>::from_iter(iter.into_iter().filter_map(|v| match v.0 {
 			BoolViewInner::Lit(lit) => Some(Ok(lit)),

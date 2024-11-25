@@ -1,7 +1,11 @@
+//! Propagator for the `int_lin_ne` constraint, and its reification. This
+//! constraint enforce that the sum of the products of the variables is not
+//! equal to a given value.
+
 use pindakaas::Lit as RawLit;
 
 use crate::{
-	actions::initialization::InitializationActions,
+	actions::InitializationActions,
 	helpers::opt_field::OptField,
 	propagator::{
 		conflict::Conflict, reason::ReasonBuilder, ExplanationActions, PropagationActions,
@@ -17,21 +21,33 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Value consistent propagator for the `int_lin_ne` or `int_lin_ne_imp`
+/// constraint.
+///
+/// `R` should be `0` if the propagator is not refied, or `1` if it is. Other
+/// values are invalid.
 pub(crate) struct IntLinearNotEqValueImpl<const R: usize> {
 	/// Variables in the sumation
 	vars: Vec<IntView>,
-	/// Violation value
+	/// The value the sumation should not equal
 	violation: IntVal,
-	/// Reified variable
+	/// Reified variable, if any
 	reification: OptField<R, RawLit>,
 	/// Number of variables currently fixed
 	num_fixed: TrailedInt,
 }
 
+/// Type alias for the non-reified version of the [`IntLinearNotEqValueImpl`]
+/// propagator.
 pub(crate) type IntLinearNotEqValue = IntLinearNotEqValueImpl<0>;
+
+/// Type alias for the reified version of the [`IntLinearNotEqValueImpl`]
+/// propagator.
 pub(crate) type IntLinearNotEqImpValue = IntLinearNotEqValueImpl<1>;
 
 impl IntLinearNotEqValue {
+	/// Prepare the [`IntLinearNotEqValue`] propagator to be posted to the
+	/// solver.
 	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
 		vars: VI,
 		mut val: IntVal,
@@ -56,6 +72,8 @@ impl IntLinearNotEqValue {
 }
 
 impl IntLinearNotEqImpValue {
+	/// Prepare the [`IntLinearNotEqImpValue`] propagator to be posted to the
+	/// solver.
 	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
 		vars: VI,
 		mut val: IntVal,
@@ -81,6 +99,9 @@ impl IntLinearNotEqImpValue {
 }
 
 impl<const R: usize> IntLinearNotEqValueImpl<R> {
+	/// Helper function to construct the reason for propagation given the index of
+	/// the variable in the list of variables to sum or the length of the list, if
+	/// explaining the reification.
 	fn reason<A: ExplanationActions>(&self, data: usize) -> impl ReasonBuilder<A> + '_ {
 		move |actions: &mut A| {
 			let mut conj: Vec<_> = self
@@ -147,11 +168,17 @@ where
 	}
 }
 
+/// [`Poster`] for a the [`IntLinearNotEqValue`] or [`IntLinearNotEqImpValue`]
+/// propagator.
 struct IntLinearNotEqValuePoster<const R: usize> {
+	/// Variables in the sumation
 	vars: Vec<IntView>,
+	/// Value that the sum of the variables must not equal.
 	val: IntVal,
+	/// Optional reification variable implying the constraint.
 	reification: OptField<R, RawLit>,
 }
+
 impl<const R: usize> Poster for IntLinearNotEqValuePoster<R> {
 	fn post<I: InitializationActions>(
 		self,

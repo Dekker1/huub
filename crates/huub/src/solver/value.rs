@@ -1,3 +1,5 @@
+//! Module containing the solution values that will be returned when when
+//! inspecting a solution.
 use std::{fmt::Display, num::NonZeroI64};
 
 use pindakaas::solver::FailedAssumtions;
@@ -10,13 +12,17 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[allow(variant_size_differences, reason = "`Int` cannot be as smal as `Bool`")]
+/// The general representation of a solution value in the solver.
 pub enum Value {
+	/// A Boolean value.
 	Bool(bool),
+	/// An integer value.
 	Int(IntVal),
 }
 
 impl Value {
-	/// If the `Value` is an integer, represent it as `IntVal`. Returns None otherwise.
+	/// If the `Value` is an integer, represent it as `IntVal`. Returns None
+	/// otherwise.
 	pub fn as_int(&self) -> Option<IntVal> {
 		match self {
 			Value::Int(i) => Some(*i),
@@ -32,12 +38,19 @@ impl Value {
 	}
 }
 
+/// Type alias for an parameter integer value.
 pub type IntVal = i64;
+
+/// Type alias for a non-zero paremeter integer value.
 pub type NonZeroIntVal = NonZeroI64;
 
+/// Type alias for a set of integers parameter value.
 pub type IntSetVal = RangeList<IntVal>;
 
+/// A trait for a function that can be used to evaluate a `SolverView` to a
+/// `Value`, which can be used when inspecting a solution.
 pub trait Valuation: Fn(SolverView) -> Value {}
+
 impl<F: Fn(SolverView) -> Value> Valuation for F {}
 
 impl Display for Value {
@@ -68,8 +81,13 @@ impl<A: FailedAssumtions> AssumptionChecker for A {
 		}
 	}
 }
-pub(crate) struct ConstantFailure;
-impl AssumptionChecker for ConstantFailure {
+
+/// An assumption checker that can be used when no assumptions are used.
+///
+/// Note that this checker will always return false.
+pub(crate) struct NoAssumptions;
+
+impl AssumptionChecker for NoAssumptions {
 	fn fail(&self, bv: BoolView) -> bool {
 		matches!(bv, BoolView(BoolViewInner::Const(false)))
 	}

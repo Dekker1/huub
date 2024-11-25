@@ -1,3 +1,5 @@
+//! Representation and manipulation of integer decision variable in [`Model`].
+
 use std::ops::{Add, Mul, Neg};
 
 use pindakaas::{solver::propagation::PropagatingSolver, ClauseDatabase};
@@ -11,6 +13,7 @@ use crate::{
 };
 
 impl IntView {
+	/// Get the [`view::IntView`] to which the `IntView` will be mapped.
 	pub(crate) fn to_arg<Oracle: PropagatingSolver<Engine>>(
 		&self,
 		slv: &mut Solver<Oracle>,
@@ -21,15 +24,23 @@ impl IntView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Reference type for integer decision variables in a [`Model`].
 pub struct IntVar(pub(crate) u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Defintition of an integer decision variable in a [`Model`].
 pub(crate) struct IntVarDef {
+	/// The set of possible values that the variable can take.
 	pub(crate) domain: RangeList<IntVal>,
+	/// The list of (indexes of) constraints in which the variable appears.
+	///
+	/// This list is used to enqueue the constraints for propagation when the
+	/// domain of the variable changes.
 	pub(crate) constraints: Vec<usize>,
 }
 
 impl IntVarDef {
+	/// Create a new integer variable definition with the given domain.
 	pub(crate) fn with_domain(dom: RangeList<IntVal>) -> Self {
 		Self {
 			domain: dom,
@@ -39,10 +50,15 @@ impl IntVarDef {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// A reference to an integer value or its transformation in a [`Model`].
 pub enum IntView {
+	/// Direct reference to an integer variable.
 	Var(IntVar),
+	/// Constant integer value.
 	Const(i64),
+	/// Linear transformation of an integer variable.
 	Linear(LinearTransform, IntVar),
+	/// Linear transformation of a Boolean variable.
 	Bool(LinearTransform, BoolView),
 }
 
@@ -105,6 +121,8 @@ impl From<BoolView> for IntView {
 }
 
 impl Model {
+	/// Ensure that a given integer view cannot take any of the values in the
+	/// given set.
 	pub(crate) fn diff_int_domain(
 		&mut self,
 		iv: &IntView,
@@ -152,6 +170,7 @@ impl Model {
 		}
 	}
 
+	/// Return the minimal value that the given integer view can take.
 	pub(crate) fn get_int_lower_bound(&self, iv: &IntView) -> IntVal {
 		match *iv {
 			IntView::Var(v) => {
@@ -177,6 +196,7 @@ impl Model {
 		}
 	}
 
+	/// Return the maximal value that the given integer view can take.
 	pub(crate) fn get_int_upper_bound(&self, iv: &IntView) -> IntVal {
 		match *iv {
 			IntView::Var(v) => {
@@ -202,6 +222,8 @@ impl Model {
 		}
 	}
 
+	/// Ensure that the given integer decision variable takes a value in in the
+	/// given set.
 	pub(crate) fn intersect_int_domain(
 		&mut self,
 		iv: &IntView,
@@ -249,6 +271,7 @@ impl Model {
 		}
 	}
 
+	/// Set the value of a boolean variable.
 	pub(crate) fn set_bool(&mut self, b: &BoolView, con: usize) -> Result<(), ReformulationError> {
 		match b {
 			BoolView::Lit(l) => self
@@ -267,6 +290,7 @@ impl Model {
 		}
 	}
 
+	/// Ensure that a given integer variable cannot take a value lower than `lb`.
 	pub(crate) fn set_int_lower_bound(
 		&mut self,
 		iv: &IntView,
@@ -332,6 +356,7 @@ impl Model {
 		}
 	}
 
+	/// Ensure that an integer variable cannot take a value greater than `ub`.
 	pub(crate) fn set_int_upper_bound(
 		&mut self,
 		iv: &IntView,
@@ -395,6 +420,7 @@ impl Model {
 		}
 	}
 
+	/// Set the value of an integer decision variable.
 	pub(crate) fn set_int_value(
 		&mut self,
 		iv: &IntView,

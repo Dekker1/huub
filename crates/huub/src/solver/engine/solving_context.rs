@@ -1,3 +1,7 @@
+//! Module containing the [`SolvingContext`] structure used to take actions
+//! during the progation and solution checking process. This structure contains
+//! the implementation of the actions that are exposed to the propagators.
+
 use delegate::delegate;
 use index_vec::IndexVec;
 use pindakaas::{solver::propagation::SolvingActions, Lit as RawLit};
@@ -5,8 +9,7 @@ use tracing::trace;
 
 use crate::{
 	actions::{
-		decision::DecisionActions, explanation::ExplanationActions, inspection::InspectionActions,
-		propagation::PropagationActions, trailing::TrailingActions,
+		DecisionActions, ExplanationActions, InspectionActions, PropagationActions, TrailingActions,
 	},
 	propagator::{
 		conflict::Conflict,
@@ -25,6 +28,10 @@ use crate::{
 	BoolView, Clause, IntVal, IntView, LitMeaning,
 };
 
+/// Structure to hold the internal [`State`] of the propagation engine and the
+/// [`SolvingActions`] exposed by the SAT oracle.
+///
+/// This structure is used to run the propagators that have been scheduled.
 pub(crate) struct SolvingContext<'a> {
 	/// Actions to create new variables in the oracle
 	pub(crate) slv: &'a mut dyn SolvingActions,
@@ -34,9 +41,13 @@ pub(crate) struct SolvingContext<'a> {
 	pub(crate) current_prop: PropRef,
 }
 
+/// Type used to communicate whether a change is redundant, conflicting, or new.
 enum ChangeType {
+	/// Change is redundant, no action needs to be taken.
 	Redundant,
+	/// Change is new and should be propagated.
 	New,
+	/// Change is conflicting, and a conflict should be raised.
 	Conflicting,
 }
 

@@ -1,9 +1,13 @@
+//! Module containing general, e.g. purely numeric, structures or used in
+//! multiple places in the library and are not exposed to the user.
+
 pub(crate) mod linear_transform;
 pub(crate) mod opt_field;
 
 use crate::{IntVal, NonZeroIntVal};
 
 #[inline]
+/// Integer division that rounds towards positive infinity.
 pub(crate) fn div_ceil(a: IntVal, b: NonZeroIntVal) -> IntVal {
 	let d = a / b.get();
 	let r = a % b.get();
@@ -14,6 +18,7 @@ pub(crate) fn div_ceil(a: IntVal, b: NonZeroIntVal) -> IntVal {
 	}
 }
 
+/// Integer division that rounds towards negative infinity.
 pub(crate) fn div_floor(a: IntVal, b: NonZeroIntVal) -> IntVal {
 	let d = a / b.get();
 	let r = a % b.get();

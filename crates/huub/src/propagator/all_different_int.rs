@@ -1,5 +1,8 @@
+//! Propagators for the `all_different_int` constraint, which enforces that a
+//! list of integer variables each take a different value.
+
 use crate::{
-	actions::{explanation::ExplanationActions, initialization::InitializationActions},
+	actions::{ExplanationActions, InitializationActions},
 	propagator::{conflict::Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, int_var::LitMeaning, queue::PriorityLevel},
@@ -10,17 +13,21 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Value consistent propagator for the `all_different_int` constraint.
 pub(crate) struct AllDifferentIntValue {
+	/// List of integer variables that must take different values.
 	vars: Vec<IntView>,
-	action_list: Vec<u32>,
 }
 
 impl AllDifferentIntValue {
+	/// Prepare a new [`AllDifferentIntValue`] propagator to be posted to the
+	/// solver.
 	pub(crate) fn prepare<V: Into<IntView>, I: IntoIterator<Item = V>>(vars: I) -> impl Poster {
 		let vars: Vec<IntView> = vars.into_iter().map(Into::into).collect();
 		AllDifferentIntValuePoster { vars }
 	}
 }
+
 impl<P, E> Propagator<P, E> for AllDifferentIntValue
 where
 	P: PropagationActions,
@@ -43,31 +50,22 @@ where
 	}
 }
 
+/// [`Poster`] for [`AllDifferentIntValue`].
 struct AllDifferentIntValuePoster {
+	/// The list of variables that must take different values.
 	vars: Vec<IntView>,
 }
+
 impl Poster for AllDifferentIntValuePoster {
 	fn post<I: InitializationActions>(
 		self,
 		actions: &mut I,
 	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		let action_list: Vec<u32> = self
+		let enqueue = self
 			.vars
 			.iter()
-			.enumerate()
-			.filter_map(|(i, v)| {
-				if matches!(v.0, IntViewInner::Const(_)) {
-					Some(i as u32)
-				} else {
-					None
-				}
-			})
-			.collect();
-		let enqueue = !action_list.is_empty();
-		let prop = AllDifferentIntValue {
-			vars: self.vars,
-			action_list,
-		};
+			.any(|v| matches!(v, IntView(IntViewInner::Const(_))));
+		let prop = AllDifferentIntValue { vars: self.vars };
 		for &v in prop.vars.iter() {
 			actions.enqueue_on_int_change(v, IntPropCond::Fixed);
 		}

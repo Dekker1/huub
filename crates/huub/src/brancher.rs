@@ -1,9 +1,11 @@
+//! Module containing methods for making search decisions in the solver.
+
 use std::fmt::Debug;
 
 use pindakaas::Lit as RawLit;
 
 use crate::{
-	actions::{decision::DecisionActions, initialization::InitializationActions},
+	actions::{DecisionActions, InitializationActions},
 	model::branching::{ValueSelection, VariableSelection},
 	solver::{
 		engine::{
@@ -16,60 +18,104 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// [`BrancherPoster`] for [`BoolBrancher`].
 pub(crate) struct BoolBrancherPoster {
+	/// Boolean variables to be branched on.
 	vars: Vec<BoolView>,
+	/// [`VariableSelection`] strategy used to select the next decision variable
+	/// to branch on.
 	var_sel: VariableSelection,
+	/// [`ValueSelection`] strategy used to select the way in which to branch on
+	/// the selected decision variable.
 	val_sel: ValueSelection,
 }
 
+/// A trait for making search decisions in the solver
 pub(crate) trait Brancher<D: DecisionActions>: DynBranchClone + Debug {
+	/// Make a next search decision using the given decision actions.
 	fn decide(&mut self, actions: &mut D) -> Decision;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// General brancher for Boolean variables that makes search decision by
+/// following a given [`VariableSelection`] and [`ValueSelection`] strategy.
 pub(crate) struct BoolBrancher {
+	/// Boolean variables to be branched on.
 	vars: Vec<RawLit>,
+	/// [`VariableSelection`] strategy used to select the next decision variable
+	/// to branch on.
 	var_sel: VariableSelection,
+	/// [`ValueSelection`] strategy used to select the way in which to branch on
+	/// the selected decision variable.
 	val_sel: ValueSelection,
+	/// The start of the unfixed variables in `vars`.
 	next: TrailedInt,
 }
 
+/// An search decision made by a [`Brancher`].
 pub(crate) enum Decision {
-	/// Make the decision to branch on the given literal
+	/// Make the decision to branch on the given literal.
 	Select(RawLit),
-	/// The brancher has exhausted all possible decisions, but can be backtracked to a previous state
+	/// The brancher has exhausted all possible decisions, but can be backtracked
+	/// to a previous state.
 	Exhausted,
-	/// The brancher has exhausted all possible decisions and cannot be backtracked to a previous state
+	/// The brancher has exhausted all possible decisions and cannot be
+	/// backtracked to a previous state.
 	Consumed,
 }
 
+/// A trait to allow the cloning of boxed branchers.
+///
+/// This trait allows us to implement [`Clone`] for [`BoxedBrancher`].
 pub(crate) trait DynBranchClone {
+	/// Clone the object and store it as a boxed trait object.
 	fn clone_dyn_branch(&self) -> BoxedBrancher;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// General brancher for integer variables that makes search decision by
+/// following a given [`VariableSelection`] and [`ValueSelection`] strategy.
 pub(crate) struct IntBrancher {
+	/// Integer variables to be branched on.
 	vars: Vec<IntView>,
+	/// [`VariableSelection`] strategy used to select the next decision variable
+	/// to branch on.
 	var_sel: VariableSelection,
+	/// [`ValueSelection`] strategy used to select the way in which to branch on
+	/// the selected decision variable.
 	val_sel: ValueSelection,
+	/// The start of the unfixed variables in `vars`.
 	next: TrailedInt,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A [`BrancherPoster`] for [`IntBrancher`].
 struct IntBrancherPoster {
+	/// Integer variables to be branched on.
 	vars: Vec<IntView>,
+	/// [`VariableSelection`] strategy used to select the next decision variable
+	/// to branch on.
 	var_sel: VariableSelection,
+	/// [`ValueSelection`] strategy used to select the way in which to branch on
+	/// the selected decision variable.
 	val_sel: ValueSelection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A brancher that enforces Boolean conditions that is abandoned when a
+/// conflict is encountered. These branchers are generally used to warm start,
+/// i.e. quickly reach, a (partial) known or expected solution.
 pub(crate) struct WarmStartBrancher {
+	/// Boolean conditions to be tried.
 	decisions: Vec<RawLit>,
+	/// Number of conflicts at the time of posting the brancher.
 	conflicts: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A [`BrancherPoster`] for [`WarmStartBrancher`].
 pub(crate) struct WarmStartBrancherPoster {
+	/// Boolean conditions to be tried.
 	decisions: Vec<BoolView>,
 }
 
@@ -80,6 +126,8 @@ impl<B: for<'a> Brancher<SolvingContext<'a>> + Clone + 'static> DynBranchClone f
 }
 
 impl BoolBrancher {
+	/// Prepare a general Boolean brancher with the given variables and selection
+	/// strategies to be posted in a [`Solver`].
 	pub(crate) fn prepare(
 		vars: Vec<BoolView>,
 		var_sel: VariableSelection,
@@ -169,6 +217,8 @@ impl Clone for BoxedBrancher {
 }
 
 impl IntBrancher {
+	/// Prepare a general integer brancher with the given variables and selection
+	/// strategies to be posted in a [`Solver`].
 	pub(crate) fn prepare(
 		vars: Vec<IntView>,
 		var_sel: VariableSelection,
@@ -291,6 +341,7 @@ impl BrancherPoster for IntBrancherPoster {
 }
 
 impl WarmStartBrancher {
+	/// Prepare a warm start branch to be posted to a [`Solver`].
 	pub(crate) fn prepare(decisions: Vec<BoolView>) -> impl BrancherPoster {
 		WarmStartBrancherPoster { decisions }
 	}

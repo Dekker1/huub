@@ -1,3 +1,6 @@
+//! Module that contains the implementation of a custom [`tracing::Subscriber`]
+//! for `fzn-huub`.
+
 use std::{
 	collections::HashMap,
 	fmt::{self, Display},
@@ -22,17 +25,36 @@ use tracing_subscriber::{
 };
 use ustr::Ustr;
 
+/// A [`tracing_subscriber::FormatFields`] implementation that attempts to
+/// format literals and integer variables according to their FlatZinc names,
+/// formatting all other fields using a `DefaultFields` formatter.
 struct FmtLitFields {
+	/// The inner formatter that will be used to format fields that are not
+	/// literals or integer variables.
 	fmt: DefaultFields,
+	/// The mapping from integers representing literals to the definitions of
+	/// their names.
 	lit_reverse_map: Arc<Mutex<HashMap<LitInt, LitName>>>,
+	/// The mapping from indexes of integer variables to their names.
 	int_reverse_map: Arc<Mutex<Vec<Ustr>>>,
 }
 
+/// Type alias of an integer type that can be used to represent literals.
 type LitInt = NonZeroI32;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Definition of how a literal should be named.
 pub(crate) enum LitName {
-	BoolVar(Ustr, bool), // name, positive
+	/// The literal represents a Boolean variable in the FlatZinc model.
+	///
+	/// The tuple constrains the name of the variable and whether the literal is
+	/// the positive of negative version of the variable.
+	BoolVar(Ustr, bool),
+	/// The literal represents a condition of an integer variable.
+	///
+	/// The tuple contains the index of the variable in the FlatZinc model (which
+	/// is used as the key in [`FmtLitFields::int_reverse_map`]), and
+	/// [`LitMeaning`] of the literal.
 	IntLit(usize, LitMeaning),
 }
 
@@ -40,25 +62,44 @@ pub(crate) enum LitName {
 /// to use their FlatZinc names
 #[derive(Debug, Clone)]
 struct LitNames<'a, V> {
+	/// Inner visitor that will be used to format the fields.
 	inner: V,
+	/// The mapping from integers representing literals to the definitions of
+	/// their names.
 	lit_reverse_map: &'a HashMap<LitInt, LitName>,
+	/// The mapping from indexes of integer variables to their names.
 	int_reverse_map: &'a Vec<Ustr>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
+/// Structure used to parse log messages informing the subscriber about a new
+/// literal that has been created.
 struct RecordLazyLits {
+	/// Whether the log message had the "register new literal" message.
 	lazy_lit_message: bool,
+	/// The the `int_var` field of the log message, if any.
 	int_var: Option<usize>,
+	/// The `is_eq` field of the log message, if any.
 	eq_lit: Option<bool>,
+	/// The `val` field of the log message, if any.
 	val: Option<IntVal>,
+	/// The `lit` field of the log message, if any.
 	lit: Option<LitInt>,
+	/// Whether the log message contains any unexpected fields.
 	other_values: bool,
 }
 
+/// A [`tracing_subscriber::Layer`] that registers the names of lazily created
+/// literals for any future log messages.
 struct RegisterLazyLits {
+	/// A mapping from the literals to a definition of a literal name.
 	lit_reverse_map: Arc<Mutex<HashMap<LitInt, LitName>>>,
 }
 
+/// Create a [`tracing_subscriber::Subscriber`] specialized for `fzn-huub`.
+///
+/// The given subscriber additionally formats literals and integer variables
+/// using the name mapping provided by `lit_reverse_map` and `int_reverse_map`.
 pub(crate) fn create_subscriber<W>(
 	verbose: u8,
 	make_writer: W,
@@ -90,6 +131,9 @@ where
 }
 
 impl FmtLitFields {
+	/// Create a new [`FmtLitField`] formatter based on the given `fmt`, using
+	/// names for literals based on the given `lit_reverse_map` and
+	/// `int_reverse_map`.
 	fn new(
 		fmt: DefaultFields,
 		lit_reverse_map: Arc<Mutex<HashMap<LitInt, LitName>>>,
@@ -114,6 +158,7 @@ impl<'writer> FormatFields<'writer> for FmtLitFields {
 }
 
 impl LitName {
+	/// Returns a string representation of the literal using the FlatZinc names.
 	fn to_string(&self, int_map: &[Ustr]) -> String {
 		match self {
 			LitName::BoolVar(name, pos) => {
@@ -157,6 +202,7 @@ impl<'a, V> LitNames<'a, V> {
 
 impl<'a, V: Visit> LitNames<'a, V> {
 	#[inline]
+	/// Check if the field should and can be formatted as a literal.
 	fn check_lit(&mut self, field: &Field, value: i64) -> bool {
 		if field.name().starts_with("lit") | field.name().starts_with("bool_var") {
 			if let Some(name) = self
@@ -172,6 +218,7 @@ impl<'a, V: Visit> LitNames<'a, V> {
 	}
 
 	#[inline]
+	/// Check if the field should and can be formatted as an integer variable.
 	fn check_int_var(&mut self, field: &Field, value: u64) -> bool {
 		if field.name().starts_with("int_var") {
 			if let Some(name) = self.int_reverse_map.get(value as usize) {
@@ -183,6 +230,8 @@ impl<'a, V: Visit> LitNames<'a, V> {
 	}
 
 	#[inline]
+	/// Check if the field should and can be formatted as a clause or a list of
+	/// literals.
 	fn check_clause(&mut self, field: &Field, value: &dyn fmt::Debug) -> bool {
 		if field.name().starts_with("clause") || field.name().starts_with("lits") {
 			let res: Result<Vec<i32>, _> = serde_json::from_str(&format!("{:?}", value));
@@ -207,6 +256,8 @@ impl<'a, V: Visit> LitNames<'a, V> {
 	}
 
 	#[inline]
+	/// Check whether the field should and can be formatted as a list of integer
+	/// variables.
 	fn check_int_vars(&mut self, field: &Field, value: &dyn fmt::Debug) -> bool {
 		if field.name().starts_with("int_vars") {
 			let res: Result<Vec<usize>, _> = serde_json::from_str(&format!("{:?}", value));
@@ -277,6 +328,10 @@ impl<T, V: VisitOutput<T>> VisitOutput<T> for LitNames<'_, V> {
 }
 
 impl RecordLazyLits {
+	/// This method is called when the [`Visit`] implementation has been called.
+	/// If the visited fields match the expected fields of log message for a new
+	/// literal, then the method will register the literal in the
+	/// `lit_reverse_map` and return `true`. Otherwise, it will return `false`.
 	fn finish(self, lit_reverse_map: &Arc<Mutex<HashMap<LitInt, LitName>>>) -> bool {
 		if self.other_values {
 			return false;
@@ -337,6 +392,7 @@ impl Visit for RecordLazyLits {
 }
 
 impl RegisterLazyLits {
+	/// Create a new instance of the [`RegisterLazyLits`] layer.
 	fn new(lit_reverse_map: Arc<Mutex<HashMap<LitInt, LitName>>>) -> Self {
 		Self { lit_reverse_map }
 	}

@@ -1,3 +1,5 @@
+//! Definitions of constraints that can be used as part of a model.
+
 use std::iter::once;
 
 use itertools::Itertools;
@@ -5,7 +7,7 @@ use pindakaas::solver::propagation::PropagatingSolver;
 use rangelist::RangeList;
 
 use crate::{
-	actions::inspection::InspectionActions,
+	actions::InspectionActions,
 	helpers::{div_ceil, div_floor},
 	model::{bool::BoolView, int::IntView, reformulate::VariableMap},
 	propagator::{
@@ -28,32 +30,100 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// The collection of possible constraint that can be part of a [`Model`].
 pub enum Constraint {
+	/// `all_different_int` constraint, which enforces that all the given integer
+	/// decision variables take different values.
 	AllDifferentInt(Vec<IntView>),
+	/// `array_int_element` which enforces that the final integer decision
+	/// variable takes the value equal the element of the given array of integer
+	/// integer values at the index given by the integer decision variable.
 	ArrayIntElement(Vec<IntVal>, IntView, IntView),
+	/// `array_int_maximum` constraint, which enforces that the final integer
+	/// decision variable takes the maximum value of the given array of integer
+	/// decision variables.
 	ArrayIntMaximum(Vec<IntView>, IntView),
+	/// `array_int_minimum` constraint, which enforces that the final integer
+	/// decision variable takes the minimum value of the given array of integer
+	/// decision variables.
 	ArrayIntMinimum(Vec<IntView>, IntView),
+	/// `array_var_bool_element` constraint, which enforces that the final Boolean
+	/// decision variable takes the value equal the element of the given array of
+	/// Boolean decision variables at the index given by the integer decision
+	/// variable.
 	ArrayVarBoolElement(Vec<BoolExpr>, IntView, BoolExpr),
+	/// `array_var_int_element` constraint, which enforces that final integer
+	/// decision variable takes the value equal the element of the given array of
+	/// integer decision variables at the index given by the second integer
+	/// decision variable.
 	ArrayVarIntElement(Vec<IntView>, IntView, IntView),
+	/// `disjuctive_strict` constraint, which enforces that the given a list of
+	/// integer decision variables representing the start times of tasks and a
+	/// list of integer values representing the durations of tasks, the tasks do
+	/// not overlap in time.
 	DisjunctiveStrict(Vec<IntView>, Vec<IntVal>),
+	/// `int_abs` constraint, which enforces that the second integer decision
+	/// variable takes the absolute value of the first integer decision variable.
 	IntAbs(IntView, IntView),
+	/// `int_div` constraint, which enforces that the first integer variable
+	/// divided by the second integer variable is equal to the third integer
+	/// variable.
+	///
+	/// Note that the division is integer division, i.e. the result is rounded
+	/// towards zero.
 	IntDiv(IntView, IntView, IntView),
+	/// `int_lin_eq` constraint, which enforces that the sum of the integer views
+	/// is equal to the given integer value.
 	IntLinEq(Vec<IntView>, IntVal),
+	/// `int_lin_eq_imp` constraint, which enforces that if the given Boolean
+	/// decision variable is `true`, then the sum of the integer views is equal to
+	/// the given integer value.
 	IntLinEqImp(Vec<IntView>, IntVal, BoolExpr),
+	/// `int_lin_eq_reif` constraint, which enforces that the given Boolean
+	/// decision variable is `true` if-and-only-if the sum of the integer views is
+	/// equal to the given integer value.
 	IntLinEqReif(Vec<IntView>, IntVal, BoolExpr),
+	/// `int_lin_le` constraint, which enforces that the sum of the integer views
+	/// is less than or equal to the given integer value.
 	IntLinLessEq(Vec<IntView>, IntVal),
+	/// `int_lin_le_imp` constraint, which enforces that if the given Boolean
+	/// decision variable is `true`, then the sum of the integer views is less
+	/// than or equal to the given integer value.
 	IntLinLessEqImp(Vec<IntView>, IntVal, BoolExpr),
+	/// `int_lin_le_reif` constraint, which enforces that the given Boolean
+	/// decision variable is `true` if-and-only-if the sum of the integer views is
+	/// less than or equal to the given integer value.
 	IntLinLessEqReif(Vec<IntView>, IntVal, BoolExpr),
+	/// `int_lin_ne` constraint, which enforces that the sum of the integer views
+	/// is not equal to the given integer value.
 	IntLinNotEq(Vec<IntView>, IntVal),
+	/// `int_lin_ne_imp` constraint, which enforces that if the given Boolean
+	/// decision variable is `true`, then the sum of the integer views is not
+	/// equal to the given integer value.
 	IntLinNotEqImp(Vec<IntView>, IntVal, BoolExpr),
+	/// `int_lin_ne_reif` constraint, which enforces that the given Boolean
+	/// variable is `true` if-and-only-if the sum of the integer views is not
+	/// equal to the given integer value.
 	IntLinNotEqReif(Vec<IntView>, IntVal, BoolExpr),
+	/// `int_pow` constraint, which enforces that the first (base) integer
+	/// variable exponentiated by the second (exponent) integer variable is equal
+	/// to the third (result) integer variable.
 	IntPow(IntView, IntView, IntView),
+	/// `int_times` constraint, which enforces that the product of the first two
+	/// integer variables is equal to a third.
 	IntTimes(IntView, IntView, IntView),
+	/// A constraint given as a propasitional logic formula, which is enforced to
+	/// be `true`.
 	PropLogic(BoolExpr),
+	/// `set_in_reif` constraint, which enforces that the given Boolean variable
+	/// takes the value `true` if-and-only-if an integer variable is in a given
+	/// set.
 	SetInReif(IntView, IntSetVal, BoolExpr),
 }
 
 impl Constraint {
+	/// Map the constraint into propagators and clauses to be added to the given
+	/// solver, using the variable mapping provided.
 	pub(crate) fn to_solver<Oracle: PropagatingSolver<Engine>>(
 		&self,
 		slv: &mut Solver<Oracle>,
@@ -383,6 +453,8 @@ impl Constraint {
 }
 
 impl Model {
+	/// Propagate the constraint at index `con`, updating the domains of the
+	/// variables and rewriting the constraint if necessary.
 	pub(crate) fn propagate(&mut self, con: usize) -> Result<(), ReformulationError> {
 		let simplified = match self.constraints[con].clone() {
 			Constraint::AllDifferentInt(vars) => {
@@ -622,6 +694,8 @@ impl Model {
 		Ok(())
 	}
 
+	/// Subscribe the constraint located at index `con` to changes in the
+	/// variables it depends on.
 	pub(crate) fn subscribe(&mut self, con: usize) {
 		match &self.constraints[con] {
 			Constraint::ArrayIntMaximum(args, m) | Constraint::ArrayIntMinimum(args, m) => {

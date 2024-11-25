@@ -1,7 +1,10 @@
+//! Propagators for the `int_abs` constraint, which enforces that one variable
+//! is takes absolute value of another.
+
 use std::iter::once;
 
 use crate::{
-	actions::{explanation::ExplanationActions, initialization::InitializationActions},
+	actions::{ExplanationActions, InitializationActions},
 	propagator::{conflict::Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
@@ -19,12 +22,16 @@ pub(crate) struct IntAbsBounds {
 	abs: IntView,
 }
 
+/// [`Poster`] for [`IntAbsBounds`]
 struct IntAbsBoundsPoster {
+	/// The integer variable whose absolute value is being taken
 	origin: IntView,
+	/// The integer variable representing the absolute value
 	abs: IntView,
 }
 
 impl IntAbsBounds {
+	/// Prepare a new [`IntAbsBounds`] propagator to be posted to the solver.
 	pub(crate) fn prepare(origin: IntView, abs: IntView) -> impl Poster {
 		IntAbsBoundsPoster { origin, abs }
 	}

@@ -1,3 +1,4 @@
+//! FlatZinc command line interface for the Huub solver.
 mod trace;
 
 use std::{
@@ -26,19 +27,35 @@ use ustr::{ustr, Ustr, UstrMap};
 
 use crate::trace::LitName;
 
+/// Status message to output when it is proven that no more/better solutions can
+/// be found.
 const FZN_COMPLETE: &str = "==========";
+/// Seperator to output between solutions.
 const FZN_SEPERATOR: &str = "----------";
+/// Status message to output when no solution is found within the time limit,
+/// but the problem is not proven to be unsatisfiable.
 const FZN_UNKNOWN: &str = "=====UNKNOWN=====";
+/// Status message to output when a problem is proven to be unsatisfiable.
 const FZN_UNSATISFIABLE: &str = "=====UNSATISFIABLE=====";
 
-macro_rules! outputln {
-	($($arg:tt)*) => {
-		writeln!($($arg)*).expect("unable to write to output stream")
-	};
-}
+/// Write a message to an output stream, similar to `print!`.
+///
+/// Note that this differs from `write!` in that it will panic if writing to the
+/// stream fails.
 macro_rules! output {
 	($($arg:tt)*) => {
 		write!($($arg)*).expect("unable to write to output stream")
+	};
+}
+
+/// Write a message to an output stream with an added newline, similar to
+/// `println!`.
+///
+/// Note that this differs from `write!` in that it will panic if writing to the
+/// stream fails.
+macro_rules! outputln {
+	($($arg:tt)*) => {
+		writeln!($($arg)*).expect("unable to write to output stream")
 	};
 }
 
@@ -93,8 +110,11 @@ pub struct Cli<Stdout, Stderr> {
 
 /// Solution struct to display the results of the solver
 struct Solution<'a> {
-	value: &'a dyn Valuation,
+	/// FlatZinc instance
 	fzn: &'a FlatZinc<Ustr>,
+	/// Mapping from solver views to solution values
+	value: &'a dyn Valuation,
+	/// Mapping from FlatZinc identifiers to solver views
 	var_map: &'a UstrMap<SolverView>,
 }
 
@@ -124,6 +144,8 @@ where
 	Stdout: io::Write,
 	Stderr: Clone + for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
 {
+	/// Distill the initialization configution, used to initialize the Huub
+	/// solver, from the given command line arguments.
 	fn init_config(&self) -> InitConfig {
 		let mut config = InitConfig::default();
 		if let Some(eager_limit) = self.int_eager_limit {
@@ -135,6 +157,7 @@ where
 		config
 	}
 
+	/// Run the Huub solver in accordance to the given command line arguments.
 	pub fn run(&mut self) -> Result<(), String> {
 		// Enable tracing functionality
 		let lit_reverse_map: Arc<Mutex<HashMap<NonZeroI32, LitName>>> = Arc::default();
@@ -476,6 +499,8 @@ where
 		Ok(())
 	}
 
+	/// Set the writer that is used for error, warning, and other logging
+	/// messages.
 	pub fn with_stderr<W>(self, stderr: W, ansi_color: bool) -> Cli<Stdout, W>
 	where
 		W: Clone + for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
@@ -502,6 +527,7 @@ where
 		}
 	}
 
+	/// Set the writer that is used for the standard (solution) output.
 	pub fn with_stdout<W: io::Write>(self, stdout: W) -> Cli<W, Stderr> {
 		Cli {
 			stdout,
@@ -603,6 +629,7 @@ impl TryFrom<Arguments> for Cli<io::Stdout, fn() -> io::Stderr> {
 }
 
 impl Solution<'_> {
+	/// Method used to print a literal that is part of a solution.
 	fn print_lit(&self, lit: &Literal<Ustr>) -> String {
 		match lit {
 			Literal::Int(i) => format!("{i}"),

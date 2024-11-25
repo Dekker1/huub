@@ -1,14 +1,23 @@
+//! This module contains the data structures used to trail values during the
+//! search process. Changes made to trailed values are recorded in the central
+//! [`Trail`] structure, if the search process needs to backtrack, then these
+//! values can be restored to their previous state.
+
 use std::mem;
 
 use index_vec::IndexVec;
 use pindakaas::{Lit as RawLit, Var as RawVar};
 use tracing::trace;
 
-use crate::{actions::trailing::TrailingActions, solver::view::BoolViewInner, BoolView, IntVal};
+use crate::{actions::TrailingActions, solver::view::BoolViewInner, BoolView, IntVal};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// A structure that stores the currently assigned value of a Boolean variable
+/// and the value it had while undoing the last assignment.
 struct BoolStore {
+	/// The current value of the variable, if it is assigned.
 	value: Option<bool>,
+	/// The value of the variable, when it was untrailed.
 	restore: Option<bool>,
 }
 
@@ -19,11 +28,23 @@ index_vec::define_index_type! {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Trail {
+	/// The storage of event that have been trailed.
+	///
+	/// Note that the trail is contains a sequence of integers, but 1 or 3 of
+	/// these integers are inteded to be read as a [`TrailEvent`].
 	trail: Vec<u32>,
+	/// The current position in the trail.
+	///
+	/// This is used when undoing changes from the trail, any events after `pos`
+	/// have been transformed so they can be redone if required.
 	pos: usize,
+	/// The length of the trail when previous decisions were made.
 	prev_len: Vec<usize>,
 
+	/// Stores the current value of trailed integer values.
 	int_value: IndexVec<TrailedInt, IntVal>,
+	/// Stores the current assigned values of Boolean variables, and "redo" values
+	/// when untrailing.
 	sat_store: Vec<BoolStore>,
 }
 
@@ -40,6 +61,7 @@ impl Default for Trail {
 }
 
 impl Trail {
+	/// A trailed integer that is used to track the currently active brancher.
 	pub(crate) const CURRENT_BRANCHER: TrailedInt = TrailedInt { _raw: 0 };
 
 	#[inline]
@@ -290,8 +312,11 @@ impl TrailingActions for Trail {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// An event that is recorded such that it can be undone.
 pub(crate) enum TrailEvent {
+	/// The assignment of a Boolean variable.
 	SatAssignment(RawVar),
+	/// The assignment of a trailed integer value, and the previous value it had.
 	IntAssignment(TrailedInt, IntVal),
 }
 

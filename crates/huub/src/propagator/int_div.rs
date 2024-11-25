@@ -1,7 +1,11 @@
+//! Propagators for the `int_div` constraint, which enforces that a numerator, a
+//! denominator, and a result variable are correctly related by integer
+//! division.
+
 use std::mem;
 
 use crate::{
-	actions::{explanation::ExplanationActions, initialization::InitializationActions},
+	actions::{ExplanationActions, InitializationActions},
 	helpers::div_ceil,
 	propagator::{conflict::Conflict, PropagationActions, Propagator},
 	solver::{
@@ -25,13 +29,18 @@ pub(crate) struct IntDivBounds {
 	result: IntView,
 }
 
+/// [`Poster`] for the [`IntDivBounds`] propagator.
 struct IntDivBoundsPoster {
+	/// The numerator of the division
 	numerator: IntView,
+	/// The denominator of the division
 	denominator: IntView,
+	/// Result of the division
 	result: IntView,
 }
 
 impl IntDivBounds {
+	/// Prepare a new [`IntDivBounds`] propagator to be posted to the solver.
 	pub(crate) fn prepare(
 		numerator: IntView,
 		denominator: IntView,

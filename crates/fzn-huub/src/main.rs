@@ -1,3 +1,9 @@
+//! fzn-huub is a command-line interface (CLI) for the Huub solver.
+//!
+//! The `main.rs` file only provides an entrypoint for the executable, all other
+//! functionality is contained in the `lib.rs` file, to allow testing the
+//! functionality as a library.
+
 #![allow(
 	unused_crate_dependencies,
 	reason = "other dependencies are used in the lib.rs file"
@@ -7,6 +13,7 @@ use std::{convert::Infallible, fs, path::PathBuf, process::ExitCode};
 use fzn_huub::Cli;
 use pico_args::Arguments;
 
+/// Help message for the CLI.
 const CLI_HELP: &str = r#"USAGE
   $ fzn-huub [-a] [-i] [-s] [-t <value>] [-v] FILE
 
@@ -44,7 +51,6 @@ FLAGS
                                   (overwritten by --vsids-only)
   --vsids-only                    Only use the activity-based search heuristic provided by the SAT
                                   solver. Ignore the user-specific search heuristic.
-
 
                       === BEHAVIOUR OPTIONS ===
   --log-file <FILE>	              Output log messages from the solver to a file, instead of stderr.

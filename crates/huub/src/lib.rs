@@ -1,3 +1,14 @@
+//! # Huub - A Modular and Maintainable Lazy Clause Generation Solver
+//!
+//! Huub is a Lazy Clause Generation (LCG) solver with a focus on modularity and
+//! maintainability in addition to speed. LCG solvers are a class of solvers
+//! that can be used to solve decision and optimization problems. They are
+//! characterized by their ability to dynamically add new Boolean variables and
+//! clauses to a Boolean Satisfiability (SAT) solver during the search process.
+//! This allows the solver exploit SAT solver's ability to learn from failures
+//! during the search process, without having to encode the full problem into
+//! Boolean variables and clauses.
+
 pub(crate) mod actions;
 pub(crate) mod brancher;
 pub(crate) mod helpers;
@@ -24,7 +35,10 @@ pub use solver::{
 	Goal, SolveResult, Solver,
 };
 
-/// Type alias for a disjunction of literals (clause), used for internal type documentation.
+/// Type alias for a disjunction of literals (clause), used for internal type
+/// documentation.
 type Clause<L = RawLit> = Vec<L>;
-/// Type alias for a conjunction of literals (clause), used for internal type documentation.
+
+/// Type alias for a conjunction of literals (clause), used for internal type
+/// documentation.
 type Conjunction<L = RawLit> = Vec<L>;

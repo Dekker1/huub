@@ -53,6 +53,10 @@ impl Solver {
 		assert_eq!(status, SolveResult::Complete);
 	}
 
+	pub(crate) fn assert_unsatisfiable(&mut self) {
+		assert_eq!(self.solve(|_| unreachable!()), SolveResult::Unsatisfiable);
+	}
+
 	pub(crate) fn expect_solutions<V: Into<SolverView> + Clone>(
 		&mut self,
 		vars: &[V],
@@ -75,9 +79,5 @@ impl Solver {
 			})
 		);
 		expected.assert_eq(&solns);
-	}
-
-	pub(crate) fn assert_unsatisfiable(&mut self) {
-		assert_eq!(self.solve(|_| unreachable!()), SolveResult::Unsatisfiable);
 	}
 }

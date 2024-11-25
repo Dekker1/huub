@@ -5,7 +5,7 @@ use std::iter::once;
 
 use crate::{
 	actions::{ExplanationActions, InitializationActions},
-	propagator::{conflict::Conflict, PropagationActions, Propagator},
+	propagator::{Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
 		poster::{BoxedPropagator, Poster, QueuePreferences},

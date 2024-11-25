@@ -1,48 +1,6 @@
 //! This module contains the defitions for the priority queue used by [`Engine`]
 //! to schedule propagators.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// A priority queue for propagators.
-pub(crate) struct PriorityQueue<E> {
-	/// Internal storage of the queues for each priority level.
-	storage: [Vec<E>; 6],
-}
-
-impl<E> Default for PriorityQueue<E> {
-	fn default() -> Self {
-		Self {
-			storage: [
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-				Vec::new(),
-			],
-		}
-	}
-}
-
-impl<E> PriorityQueue<E> {
-	/// Inserts a propagator into the queue at the end of the given priority
-	/// level.
-	pub(crate) fn insert(&mut self, priority: PriorityLevel, elem: E) {
-		let i = priority as usize;
-		debug_assert!((0..=5).contains(&i));
-		self.storage[i].push(elem);
-	}
-
-	/// Pops the highest priority propagator from the queue.
-	pub(crate) fn pop(&mut self) -> Option<E> {
-		for queue in self.storage.iter_mut().rev() {
-			if !queue.is_empty() {
-				return queue.pop();
-			}
-		}
-		None
-	}
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 /// The priority levels at which propagators can be scheduled.
@@ -80,6 +38,48 @@ pub(crate) enum PriorityLevel {
 	/// An extraordinarily high level of priority, generally used to ensure
 	/// something will happen next.
 	Immediate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// A priority queue for propagators.
+pub(crate) struct PriorityQueue<E> {
+	/// Internal storage of the queues for each priority level.
+	storage: [Vec<E>; 6],
+}
+
+impl<E> PriorityQueue<E> {
+	/// Inserts a propagator into the queue at the end of the given priority
+	/// level.
+	pub(crate) fn insert(&mut self, priority: PriorityLevel, elem: E) {
+		let i = priority as usize;
+		debug_assert!((0..=5).contains(&i));
+		self.storage[i].push(elem);
+	}
+
+	/// Pops the highest priority propagator from the queue.
+	pub(crate) fn pop(&mut self) -> Option<E> {
+		for queue in self.storage.iter_mut().rev() {
+			if !queue.is_empty() {
+				return queue.pop();
+			}
+		}
+		None
+	}
+}
+
+impl<E> Default for PriorityQueue<E> {
+	fn default() -> Self {
+		Self {
+			storage: [
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+				Vec::new(),
+			],
+		}
+	}
 }
 
 #[cfg(test)]

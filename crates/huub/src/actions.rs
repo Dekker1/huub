@@ -2,10 +2,7 @@
 //! different phases of the solving process.
 
 use crate::{
-	propagator::{
-		conflict::Conflict,
-		reason::{LazyReason, ReasonBuilder},
-	},
+	propagator::{Conflict, LazyReason, ReasonBuilder},
 	solver::{
 		engine::{activation_list::IntPropCond, int_var::IntVarRef, trail::TrailedInt},
 		view::{BoolViewInner, IntViewInner},

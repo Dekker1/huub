@@ -4,7 +4,7 @@
 use crate::{
 	actions::{ExplanationActions, InitializationActions},
 	helpers::{div_ceil, div_floor},
-	propagator::{conflict::Conflict, reason::CachedReason, PropagationActions, Propagator},
+	propagator::{CachedReason, Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
 		poster::{BoxedPropagator, Poster, QueuePreferences},
@@ -20,6 +20,16 @@ pub(crate) struct IntTimesBounds {
 	/// Second factor variable
 	y: IntView,
 	/// Product variable
+	z: IntView,
+}
+
+/// [`Poster`] for the [`IntTimesBounds`] propagator.
+struct IntTimesBoundsPoster {
+	/// First factor
+	x: IntView,
+	/// Second factor
+	y: IntView,
+	/// Product
 	z: IntView,
 }
 
@@ -115,16 +125,6 @@ where
 		}
 		Ok(())
 	}
-}
-
-/// [`Poster`] for the [`IntTimesBounds`] propagator.
-struct IntTimesBoundsPoster {
-	/// First factor
-	x: IntView,
-	/// Second factor
-	y: IntView,
-	/// Product
-	z: IntView,
 }
 impl Poster for IntTimesBoundsPoster {
 	fn post<I: InitializationActions + ?Sized>(

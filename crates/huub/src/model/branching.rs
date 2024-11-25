@@ -9,24 +9,22 @@ use crate::{
 	Solver,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Strategy of selecting the next decision variable from a list to make a
-/// search decision.
-pub enum VariableSelection {
-	/// Select the unfixed decision variable with the largest remaining domain
-	/// size, using the order of the variables in case of a tie.
-	AntiFirstFail,
-	/// Select the unfixed decision variable with the smallest remaining domain
-	/// size, using the order of the variables in case of a tie.
-	FirstFail,
-	/// Select the first unfixed decision variable in the list.
-	InputOrder,
-	/// Select the unfixed decision variable with the largest upper bound, using
-	/// the order of the variables in case of a tie.
-	Largest,
-	/// Select the unfixed decision variable with the smallest lower bound, using
-	/// the order of the variables in case of a tie.
-	Smallest,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Strategy for making a search decision in a [`Model`].
+pub enum Branching {
+	/// Make a search decision by using the [`VariableSelection`] to select a
+	/// Boolean decision variable, and then set its value by using the
+	/// [`ValueSelection`].
+	Bool(Vec<BoolView>, VariableSelection, ValueSelection),
+	/// Make a search decision by using the [`VariableSelection`] to select a
+	/// integer decision variable, and then limit the domain of the variable by
+	/// using the [`ValueSelection`].
+	Int(Vec<IntView>, VariableSelection, ValueSelection),
+	/// Search by sequentially applying the given branching strategies.
+	Seq(Vec<Branching>),
+	/// Search by enforcing the given Boolean expressions, but abandon the search
+	/// when finding a conflict.
+	WarmStart(Vec<BoolView>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,22 +43,24 @@ pub enum ValueSelection {
 	OutdomainMin,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Strategy for making a search decision in a [`Model`].
-pub enum Branching {
-	/// Make a search decision by using the [`VariableSelection`] to select a
-	/// Boolean decision variable, and then set its value by using the
-	/// [`ValueSelection`].
-	Bool(Vec<BoolView>, VariableSelection, ValueSelection),
-	/// Make a search decision by using the [`VariableSelection`] to select a
-	/// integer decision variable, and then limit the domain of the variable by
-	/// using the [`ValueSelection`].
-	Int(Vec<IntView>, VariableSelection, ValueSelection),
-	/// Search by sequentially applying the given branching strategies.
-	Seq(Vec<Branching>),
-	/// Search by enforcing the given Boolean expressions, but abandon the search
-	/// when finding a conflict.
-	WarmStart(Vec<BoolView>),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Strategy of selecting the next decision variable from a list to make a
+/// search decision.
+pub enum VariableSelection {
+	/// Select the unfixed decision variable with the largest remaining domain
+	/// size, using the order of the variables in case of a tie.
+	AntiFirstFail,
+	/// Select the unfixed decision variable with the smallest remaining domain
+	/// size, using the order of the variables in case of a tie.
+	FirstFail,
+	/// Select the first unfixed decision variable in the list.
+	InputOrder,
+	/// Select the unfixed decision variable with the largest upper bound, using
+	/// the order of the variables in case of a tie.
+	Largest,
+	/// Select the unfixed decision variable with the smallest lower bound, using
+	/// the order of the variables in case of a tie.
+	Smallest,
 }
 
 impl Branching {

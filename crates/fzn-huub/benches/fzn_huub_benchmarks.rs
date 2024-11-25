@@ -8,6 +8,7 @@
 	unused_crate_dependencies,
 	reason = "only dependencies for benchmarking are used in this file"
 )]
+
 use std::{
 	io::Write,
 	path::{Path, PathBuf},
@@ -21,14 +22,37 @@ use expect_test::expect_file;
 use fzn_huub::Cli;
 use pico_args::Arguments;
 
+/// A configuration for instances that run for a few seconds.
+const FEW_SECONDS_CONFIG: CriterionConfig = CriterionConfig {
+	sampling_mode: Some(SamplingMode::Flat),
+	sample_size: Some(10),
+	measurement_time: Some(Duration::from_secs(60)),
+};
+
 /// The string that is printed when the solver has proven that no more/better
 /// solutions exist.
 const FZN_COMPLETE: &str = "==========\n";
+
 /// The string that is printed after every solution.
 const FZN_SEPERATOR: &str = "----------\n";
+
 /// The string that is printed when the solver has proven that the instance is
 /// unsatisfiable.
 // const FZN_UNSATISFIABLE: &str = "=====UNSATISFIABLE=====\n";
+
+/// A configuration for instances that run in a few milliseconds.
+const INSTANT_CONFIG: CriterionConfig = CriterionConfig {
+	sampling_mode: None,
+	sample_size: Some(60),
+	measurement_time: None,
+};
+
+/// A configuration for instances that run in less than a second.
+const MILLISECONDS_CONFIG: CriterionConfig = CriterionConfig {
+	sampling_mode: Some(SamplingMode::Flat),
+	sample_size: Some(20),
+	measurement_time: Some(Duration::from_secs(20)),
+};
 
 #[derive(Debug, Clone)]
 /// Configuration of criterion for a specific benchmark.
@@ -41,25 +65,6 @@ struct CriterionConfig {
 	measurement_time: Option<Duration>,
 }
 
-/// A configuration for instances that run in a few milliseconds.
-const INSTANT_CONFIG: CriterionConfig = CriterionConfig {
-	sampling_mode: None,
-	sample_size: Some(60),
-	measurement_time: None,
-};
-/// A configuration for instances that run in less than a second.
-const MILLISECONDS_CONFIG: CriterionConfig = CriterionConfig {
-	sampling_mode: Some(SamplingMode::Flat),
-	sample_size: Some(20),
-	measurement_time: Some(Duration::from_secs(20)),
-};
-/// A configuration for instances that run for a few seconds.
-const FEW_SECONDS_CONFIG: CriterionConfig = CriterionConfig {
-	sampling_mode: Some(SamplingMode::Flat),
-	sample_size: Some(10),
-	measurement_time: Some(Duration::from_secs(60)),
-};
-
 #[derive(Debug, Clone, Copy)]
 /// Output stream that immediately discards all data.
 struct DummyOutput;
@@ -71,17 +76,6 @@ enum InstanceType {
 	Optimization,
 	/// A correct solution should be found.
 	Satisfaction,
-}
-
-/// Run the solver on the given instance and return the output as raw bytes.
-fn run_solver(fzn: &Path) -> Vec<u8> {
-	let args = Arguments::from_vec(vec![fzn.into()]);
-	let cli: Cli<_, _> = args.try_into().unwrap();
-	let mut out = Vec::new();
-	let mut cli = cli.with_stdout(&mut out).with_stderr(|| DummyOutput, false);
-	cli.run()
-		.expect("unexpected error while running the solver");
-	out
 }
 
 /// Run the solver on the given instance and check the output.
@@ -136,6 +130,17 @@ fn optimization(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Run the solver on the given instance and return the output as raw bytes.
+fn run_solver(fzn: &Path) -> Vec<u8> {
+	let args = Arguments::from_vec(vec![fzn.into()]);
+	let cli: Cli<_, _> = args.try_into().unwrap();
+	let mut out = Vec::new();
+	let mut cli = cli.with_stdout(&mut out).with_stderr(|| DummyOutput, false);
+	cli.run()
+		.expect("unexpected error while running the solver");
+	out
+}
+
 /// Benchmarks of satisfaction problems (finding any correct solution).
 ///
 /// Note that it is assumed that the solver will always find the same solution,
@@ -158,8 +163,6 @@ fn satisfaction(c: &mut Criterion) {
 	group.finish();
 }
 
-criterion_main!(criterion_gen::benches);
-
 impl CriterionConfig {
 	/// Apply the configuration to the given [`BenchmarkGroup`].
 	fn apply<M: Measurement>(&self, group: &mut BenchmarkGroup<'_, M>) {
@@ -176,11 +179,11 @@ impl CriterionConfig {
 }
 
 impl Write for DummyOutput {
-	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-		Ok(buf.len())
-	}
 	fn flush(&mut self) -> std::io::Result<()> {
 		Ok(())
+	}
+	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+		Ok(buf.len())
 	}
 }
 
@@ -192,3 +195,5 @@ mod criterion_gen {
 
 	criterion_group!(benches, optimization, satisfaction);
 }
+
+criterion_main!(criterion_gen::benches);

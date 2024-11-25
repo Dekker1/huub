@@ -7,7 +7,7 @@ use tracing::trace;
 
 use crate::{
 	actions::{ExplanationActions, InitializationActions, InspectionActions},
-	propagator::{conflict::Conflict, reason::ReasonBuilder, PropagationActions, Propagator},
+	propagator::{Conflict, PropagationActions, Propagator, ReasonBuilder},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
 		poster::{BoxedPropagator, Poster, QueuePreferences},
@@ -16,260 +16,12 @@ use crate::{
 	Conjunction, LitMeaning, ReformulationError,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// A node structure for the [`OmegaThetaTree`].
-struct OmegaThetaTreeNode {
-	/// Total duration of the tasks under the tree rooted at this node.
-	total_durations: i32,
-	/// Earliest completion time of the tasks under the tree rooted at this node.
-	earliest_completion: i32,
-
-	/// Total duration of the tasks under the tree rooted at this node, with at
-	/// most one gray node.
-	total_durations_gray: i32,
-	/// Earliest completion time of the tasks under the tree rooted at this node,
-	/// with at most one gray node.
-	earliest_completion_gray: i32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// A binary tree structure that stores the total duration and earliest
-/// completion time of tasks.
-struct OmegaThetaTree {
-	/// Storage of the nodes of the tree.
-	nodes: Vec<OmegaThetaTreeNode>,
-	/// Index of the first leaf node.
-	leaves_start_idx: usize,
-}
-
-impl OmegaThetaTree {
-	#[inline]
-	/// Calculate the index of the left child of a node `i`
-	fn left_child(i: usize) -> usize {
-		(i << 1) + 1
-	}
-
-	#[inline]
-	/// Calculate the index of the right child of a node `i`
-	fn right_child(i: usize) -> usize {
-		(i << 1) + 2
-	}
-
-	#[inline]
-	/// Calculate the index of the parent of a node `i`
-	fn parent(i: usize) -> usize {
-		debug_assert_ne!(i, 0);
-		(i - 1) >> 1
-	}
-
-	/// Create a new OmegaThetaTree with `tasks_no` tasks.
-	pub(crate) fn new(tasks_no: usize) -> Self {
-		let tree_size = (1 << (33 - (tasks_no as i32 - 1).leading_zeros())) - 1;
-		OmegaThetaTree {
-			nodes: vec![
-				OmegaThetaTreeNode {
-					total_durations: 0,
-					earliest_completion: i32::MIN,
-					total_durations_gray: 0,
-					earliest_completion_gray: i32::MIN,
-				};
-				tree_size
-			],
-			leaves_start_idx: tree_size / 2,
-		}
-	}
-
-	/// Fill the tree with task are sorted by earliest start time.
-	fn fill(&mut self, sorted_tasks: &[usize], sorted_time: &[i32], durations: &[i64]) {
-		let n = sorted_tasks.len();
-		// fill the leave nodes
-		for i in 0..n {
-			let idx = self.leaves_start_idx + i;
-			let ect = sorted_time[i] + durations[sorted_tasks[i]] as i32;
-			self.nodes[idx].total_durations = durations[sorted_tasks[i]] as i32;
-			self.nodes[idx].earliest_completion = ect;
-			self.nodes[idx].total_durations_gray = durations[sorted_tasks[i]] as i32;
-			self.nodes[idx].earliest_completion_gray = ect;
-		}
-
-		// update internal nodes in a bottom-up fashion
-		(0..self.leaves_start_idx).rev().for_each(|i| {
-			self.update_internal_node(i);
-		});
-	}
-
-	/// Return the root node of the tree.
-	fn root(&self) -> &OmegaThetaTreeNode {
-		&self.nodes[0]
-	}
-
-	/// Remove the task at index `i` from the tree.
-	fn remove_task(&mut self, i: usize) {
-		assert!(self.leaves_start_idx + i < self.nodes.len());
-		let idx = self.leaves_start_idx + i;
-		self.nodes[idx].total_durations = 0;
-		self.nodes[idx].earliest_completion = i32::MIN;
-		self.nodes[idx].total_durations_gray = 0;
-		self.nodes[idx].earliest_completion_gray = i32::MIN;
-		self.recursive_update(idx);
-	}
-
-	/// Annotate the leave node `i` as gray, and update its ancestors.
-	fn annotate_gray_task(&mut self, i: usize) {
-		assert!(self.leaves_start_idx + i < self.nodes.len());
-		let idx = self.leaves_start_idx + i;
-		self.nodes[idx].total_durations = 0;
-		self.nodes[idx].earliest_completion = i32::MIN;
-		self.recursive_update(idx);
-	}
-
-	/// Update node `i` and trigger the update of its parent recursively.
-	fn recursive_update(&mut self, i: usize) {
-		if i == 0 {
-			return;
-		}
-		let parent = Self::parent(i);
-		self.update_internal_node(parent);
-		self.recursive_update(parent);
-	}
-
-	/// Update the internal node `i` based on its children.
-	fn update_internal_node(&mut self, i: usize) {
-		let left_child = Self::left_child(i);
-		let right_child = Self::right_child(i);
-		let left_total_durations = self.nodes[left_child].total_durations;
-		let right_total_durations = self.nodes[right_child].total_durations;
-		let left_total_durations_gray = self.nodes[left_child].total_durations_gray;
-		let right_total_durations_gray = self.nodes[right_child].total_durations_gray;
-		let left_earliest_completion = self.nodes[left_child].earliest_completion;
-		let right_earliest_completion = self.nodes[right_child].earliest_completion;
-		let left_earliest_completion_gray = self.nodes[left_child].earliest_completion_gray;
-		let right_earliest_completion_gray = self.nodes[right_child].earliest_completion_gray;
-
-		self.nodes[i].total_durations = left_total_durations + right_total_durations;
-		self.nodes[i].earliest_completion = i32::max(
-			right_earliest_completion,
-			left_earliest_completion + right_total_durations,
-		);
-		self.nodes[i].total_durations_gray = i32::max(
-			left_total_durations_gray + right_total_durations,
-			left_total_durations + right_total_durations_gray,
-		);
-		self.nodes[i].earliest_completion_gray = i32::max(
-			right_earliest_completion_gray,
-			i32::max(
-				left_earliest_completion + right_total_durations_gray,
-				left_earliest_completion_gray + right_total_durations,
-			),
-		);
-	}
-
-	/// Find the gray task responsible for pushing the earliest completion time
-	fn blocked_task(&self, earliest_completion_time: i32) -> usize {
-		assert!(self.nodes[0].earliest_completion <= earliest_completion_time);
-		assert!(self.nodes[0].earliest_completion_gray >= earliest_completion_time);
-		let mut node_id = 0;
-		let mut earliest_completion_time = earliest_completion_time;
-		while node_id < self.leaves_start_idx {
-			if self.nodes[Self::left_child(node_id)].total_durations_gray == 0 {
-				node_id = Self::right_child(node_id);
-			} else if self.nodes[Self::right_child(node_id)].total_durations_gray == 0 {
-				node_id = Self::left_child(node_id);
-			} else if self.nodes[Self::right_child(node_id)].earliest_completion_gray
-				>= earliest_completion_time
-			{
-				node_id = Self::right_child(node_id);
-			} else if self.nodes[Self::left_child(node_id)].earliest_completion
-				+ self.nodes[Self::right_child(node_id)].total_durations_gray
-				>= earliest_completion_time
-			{
-				// The binding task is to the left, blocked task contributes only to the sum
-				earliest_completion_time -=
-					self.nodes[Self::left_child(node_id)].earliest_completion;
-				node_id = Self::right_child(node_id);
-				while node_id < self.leaves_start_idx {
-					if self.nodes[Self::left_child(node_id)].total_durations_gray
-						+ self.nodes[Self::right_child(node_id)].total_durations
-						== earliest_completion_time
-					{
-						earliest_completion_time -=
-							self.nodes[Self::right_child(node_id)].total_durations;
-						node_id = Self::left_child(node_id);
-					} else if self.nodes[Self::left_child(node_id)].total_durations
-						+ self.nodes[Self::right_child(node_id)].total_durations_gray
-						>= earliest_completion_time
-					{
-						earliest_completion_time -=
-							self.nodes[Self::left_child(node_id)].total_durations;
-						node_id = Self::right_child(node_id);
-					} else {
-						unreachable!("unexpected case");
-					}
-				}
-				break;
-			} else {
-				earliest_completion_time -= self.nodes[Self::right_child(node_id)].total_durations;
-				node_id = Self::left_child(node_id);
-			}
-		}
-		node_id - self.leaves_start_idx
-	}
-
-	/// Finding the task responsible for pushing the earliest completion time beyond the time_bound
-	fn binding_task(&self, time_bound: i32, node_id: usize) -> usize {
-		assert!(self.nodes[0].earliest_completion >= time_bound);
-		let mut node_id = node_id;
-		let mut earliest_completion_time = time_bound;
-		while node_id < self.leaves_start_idx {
-			if self.nodes[Self::right_child(node_id)].earliest_completion
-				>= earliest_completion_time
-			{
-				node_id = Self::right_child(node_id);
-			} else {
-				earliest_completion_time -= self.nodes[Self::right_child(node_id)].total_durations;
-				node_id = Self::left_child(node_id);
-			}
-		}
-		node_id - self.leaves_start_idx
-	}
-
-	/// Finding the task responsible for min{est_S, est_i} where
-	/// - S is the set of tasks in the tree
-	/// - task i is one of the gray task in the tree
-	fn gray_est_responsible_task(&self, earliest_completion_time: i32) -> usize {
-		assert!(self.nodes[0].earliest_completion <= earliest_completion_time);
-		assert!(self.nodes[0].earliest_completion_gray >= earliest_completion_time);
-		let mut node_id = 0;
-		let mut earliest_completion_time = earliest_completion_time;
-		while node_id < self.leaves_start_idx {
-			let left_child = Self::left_child(node_id);
-			let right_child = Self::right_child(node_id);
-			if self.nodes[right_child].earliest_completion_gray >= earliest_completion_time {
-				node_id = right_child;
-			} else if self.nodes[left_child].earliest_completion
-				+ self.nodes[right_child].total_durations_gray
-				>= earliest_completion_time
-			{
-				return self.binding_task(
-					earliest_completion_time - self.nodes[right_child].total_durations_gray,
-					left_child,
-				);
-			} else {
-				earliest_completion_time -= self.nodes[right_child].total_durations;
-				node_id = left_child;
-			}
-		}
-		node_id - self.leaves_start_idx
-	}
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Internal structure to store trailed information about tasks.
-struct TaskInfo {
-	/// Earliest start time of the task.
-	earliest_start: TrailedInt,
-	/// Latest completion time of the task.
-	latest_completion: TrailedInt,
+/// [`Poster`] for the [`DisjunctiveStrictEdgeFinding`] propagator.
+struct DisjunctiveEdgeFindingPoster {
+	/// Start times of the tasks
+	start_times: Vec<IntView>,
+	/// Durations of the tasks
+	durations: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -297,25 +49,77 @@ pub(crate) struct DisjunctiveStrictEdgeFinding {
 	trailed_info: Vec<TaskInfo>,
 }
 
-impl DisjunctiveStrictEdgeFinding {
-	/// Prepare a [`DisjunctiveStrictEdgeFinding`] to be posted to the solver.
-	pub(crate) fn prepare<V: Into<IntView>, I: IntoIterator<Item = V>>(
-		start_times: I,
-		durations: Vec<i64>,
-	) -> impl Poster {
-		let start_times: Vec<IntView> = start_times.into_iter().map(Into::into).collect();
-		DisjunctiveEdgeFindingPoster {
-			start_times,
-			durations,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A binary tree structure that stores the total duration and earliest
+/// completion time of tasks.
+struct OmegaThetaTree {
+	/// Storage of the nodes of the tree.
+	nodes: Vec<OmegaThetaTreeNode>,
+	/// Index of the first leaf node.
+	leaves_start_idx: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A node structure for the [`OmegaThetaTree`].
+struct OmegaThetaTreeNode {
+	/// Total duration of the tasks under the tree rooted at this node.
+	total_durations: i32,
+	/// Earliest completion time of the tasks under the tree rooted at this node.
+	earliest_completion: i32,
+
+	/// Total duration of the tasks under the tree rooted at this node, with at
+	/// most one gray node.
+	total_durations_gray: i32,
+	/// Earliest completion time of the tasks under the tree rooted at this node,
+	/// with at most one gray node.
+	earliest_completion_gray: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Internal structure to store trailed information about tasks.
+struct TaskInfo {
+	/// Earliest start time of the task.
+	earliest_start: TrailedInt,
+	/// Latest completion time of the task.
+	latest_completion: TrailedInt,
+}
+
+impl Poster for DisjunctiveEdgeFindingPoster {
+	fn post<I: InitializationActions>(
+		self,
+		actions: &mut I,
+	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
+		let n = self.start_times.len();
+		let prop = DisjunctiveStrictEdgeFinding {
+			start_times: self.start_times,
+			durations: self.durations,
+			tasks_sorted_earliest_start: (0..n).collect(),
+			tasks_sorted_lastest_completion: (0..n).collect(),
+			task_rankings_by_earliest_start: (0..n).collect(),
+			ot_tree: OmegaThetaTree::new(n),
+			trailed_info: (0..n)
+				.map(|_| TaskInfo {
+					earliest_start: actions.new_trailed_int(0),
+					latest_completion: actions.new_trailed_int(0),
+				})
+				.collect(),
+		};
+
+		for &v in prop.start_times.iter() {
+			actions.enqueue_on_int_change(v, IntPropCond::Bounds);
 		}
-	}
 
-	#[inline]
-	/// Return the (current) latest completion time of task `i`.
-	fn latest_completion_time<I: InspectionActions>(&self, i: usize, actions: &mut I) -> i32 {
-		actions.get_int_upper_bound(self.start_times[i]) as i32 + self.durations[i] as i32
+		Ok((
+			Box::new(prop),
+			QueuePreferences {
+				enqueue_on_post: true,
+				priority: PriorityLevel::Low,
+			},
+		))
 	}
+}
 
+impl DisjunctiveStrictEdgeFinding {
 	#[inline]
 	/// Return the (current) earliest start time of task `i`.
 	fn earliest_start_time<I: InspectionActions>(&self, i: usize, actions: &mut I) -> i32 {
@@ -368,6 +172,23 @@ impl DisjunctiveStrictEdgeFinding {
 				.collect_vec()
 		}
 	}
+
+	#[inline]
+	/// Return the (current) latest completion time of task `i`.
+	fn latest_completion_time<I: InspectionActions>(&self, i: usize, actions: &mut I) -> i32 {
+		actions.get_int_upper_bound(self.start_times[i]) as i32 + self.durations[i] as i32
+	}
+	/// Prepare a [`DisjunctiveStrictEdgeFinding`] to be posted to the solver.
+	pub(crate) fn prepare<V: Into<IntView>, I: IntoIterator<Item = V>>(
+		start_times: I,
+		durations: Vec<i64>,
+	) -> impl Poster {
+		let start_times: Vec<IntView> = start_times.into_iter().map(Into::into).collect();
+		DisjunctiveEdgeFindingPoster {
+			start_times,
+			durations,
+		}
+	}
 }
 
 impl<P, E> Propagator<P, E> for DisjunctiveStrictEdgeFinding
@@ -375,6 +196,63 @@ where
 	P: PropagationActions,
 	E: ExplanationActions,
 {
+	// todo: check whether this explanation can be generalized?
+	fn explain(&mut self, actions: &mut E, _: Option<RawLit>, task_no: u64) -> Conjunction {
+		// explain why the set of tasks Lcut(j) ∪ {i} cannot be completed before lct_j
+		// since energy of the set of tasks (including i) within the time window [earliest_start, latest_completion] is overloaded
+		// explain lower bound propagation for edge finding
+		let task_no = task_no as usize;
+		let mut clause = Vec::new();
+		let earliest_start = actions.get_trailed_int(self.trailed_info[task_no].earliest_start);
+		let latest_completion =
+			actions.get_trailed_int(self.trailed_info[task_no].latest_completion);
+
+		trace!(
+			"explain lower bound of task {} due to overload within the window [{}..{}]",
+			task_no,
+			earliest_start,
+			latest_completion
+		);
+		// collect at least latest_completion - earliest_start energy (including durations[task_no])
+		// from tasks bracketed in [earliest_start, latest_completion] and form a set O
+		// [start(t) >= latest_completion + 1] because
+		// [start(t) >= earliest_start] /\ forall (t' in O) [start(t') >= earliest_start] /\ forall (t' in O) [end(t') <= latest_completion]
+		let (bv, _) = actions.get_int_lit_relaxed(
+			self.start_times[task_no],
+			LitMeaning::GreaterEq(earliest_start),
+		);
+		clause.push(bv);
+		let mut energy = latest_completion - earliest_start - self.durations[task_no];
+		for i in 0..self.start_times.len() {
+			if i != task_no
+				&& self.earliest_start_time(i, actions) >= earliest_start as i32
+				&& self.latest_completion_time(i, actions) <= latest_completion as i32
+			{
+				clause.push(actions.get_int_lower_bound_lit(self.start_times[i]));
+				let (bv, _) = actions.get_int_lit_relaxed(
+					self.start_times[i],
+					LitMeaning::Less(latest_completion - self.durations[i] + 1),
+				);
+				clause.push(bv);
+				energy -= self.durations[i];
+				if energy < 0 {
+					break;
+				}
+			}
+		}
+		clause
+			.iter()
+			.filter_map(|bv| match bv.0 {
+				BoolViewInner::Lit(l) => Some(l),
+				BoolViewInner::Const(true) => None,
+				BoolViewInner::Const(false) => {
+					unreachable!(
+						"Unexpected false literal in the explanation of disjunctive edge finding"
+					)
+				}
+			})
+			.collect()
+	}
 	#[tracing::instrument(name = "disjunctive_bounds", level = "trace", skip(self, actions))]
 	fn propagate(&mut self, actions: &mut P) -> Result<(), Conflict> {
 		// sort the tasks by earliest start time and construct the EF trees
@@ -485,106 +363,225 @@ where
 		}
 		Ok(())
 	}
+}
 
-	// todo: check whether this explanation can be generalized?
-	fn explain(&mut self, actions: &mut E, _: Option<RawLit>, task_no: u64) -> Conjunction {
-		// explain why the set of tasks Lcut(j) ∪ {i} cannot be completed before lct_j
-		// since energy of the set of tasks (including i) within the time window [earliest_start, latest_completion] is overloaded
-		// explain lower bound propagation for edge finding
-		let task_no = task_no as usize;
-		let mut clause = Vec::new();
-		let earliest_start = actions.get_trailed_int(self.trailed_info[task_no].earliest_start);
-		let latest_completion =
-			actions.get_trailed_int(self.trailed_info[task_no].latest_completion);
+impl OmegaThetaTree {
+	/// Annotate the leave node `i` as gray, and update its ancestors.
+	fn annotate_gray_task(&mut self, i: usize) {
+		assert!(self.leaves_start_idx + i < self.nodes.len());
+		let idx = self.leaves_start_idx + i;
+		self.nodes[idx].total_durations = 0;
+		self.nodes[idx].earliest_completion = i32::MIN;
+		self.recursive_update(idx);
+	}
 
-		trace!(
-			"explain lower bound of task {} due to overload within the window [{}..{}]",
-			task_no,
-			earliest_start,
-			latest_completion
-		);
-		// collect at least latest_completion - earliest_start energy (including durations[task_no])
-		// from tasks bracketed in [earliest_start, latest_completion] and form a set O
-		// [start(t) >= latest_completion + 1] because
-		// [start(t) >= earliest_start] /\ forall (t' in O) [start(t') >= earliest_start] /\ forall (t' in O) [end(t') <= latest_completion]
-		let (bv, _) = actions.get_int_lit_relaxed(
-			self.start_times[task_no],
-			LitMeaning::GreaterEq(earliest_start),
-		);
-		clause.push(bv);
-		let mut energy = latest_completion - earliest_start - self.durations[task_no];
-		for i in 0..self.start_times.len() {
-			if i != task_no
-				&& self.earliest_start_time(i, actions) >= earliest_start as i32
-				&& self.latest_completion_time(i, actions) <= latest_completion as i32
+	/// Finding the task responsible for pushing the earliest completion time beyond the time_bound
+	fn binding_task(&self, time_bound: i32, node_id: usize) -> usize {
+		assert!(self.nodes[0].earliest_completion >= time_bound);
+		let mut node_id = node_id;
+		let mut earliest_completion_time = time_bound;
+		while node_id < self.leaves_start_idx {
+			if self.nodes[Self::right_child(node_id)].earliest_completion
+				>= earliest_completion_time
 			{
-				clause.push(actions.get_int_lower_bound_lit(self.start_times[i]));
-				let (bv, _) = actions.get_int_lit_relaxed(
-					self.start_times[i],
-					LitMeaning::Less(latest_completion - self.durations[i] + 1),
-				);
-				clause.push(bv);
-				energy -= self.durations[i];
-				if energy < 0 {
-					break;
-				}
+				node_id = Self::right_child(node_id);
+			} else {
+				earliest_completion_time -= self.nodes[Self::right_child(node_id)].total_durations;
+				node_id = Self::left_child(node_id);
 			}
 		}
-		clause
-			.iter()
-			.filter_map(|bv| match bv.0 {
-				BoolViewInner::Lit(l) => Some(l),
-				BoolViewInner::Const(true) => None,
-				BoolViewInner::Const(false) => {
-					unreachable!(
-						"Unexpected false literal in the explanation of disjunctive edge finding"
-					)
-				}
-			})
-			.collect()
+		node_id - self.leaves_start_idx
 	}
-}
 
-/// [`Poster`] for the [`DisjunctiveStrictEdgeFinding`] propagator.
-struct DisjunctiveEdgeFindingPoster {
-	/// Start times of the tasks
-	start_times: Vec<IntView>,
-	/// Durations of the tasks
-	durations: Vec<i64>,
-}
+	/// Find the gray task responsible for pushing the earliest completion time
+	fn blocked_task(&self, earliest_completion_time: i32) -> usize {
+		assert!(self.nodes[0].earliest_completion <= earliest_completion_time);
+		assert!(self.nodes[0].earliest_completion_gray >= earliest_completion_time);
+		let mut node_id = 0;
+		let mut earliest_completion_time = earliest_completion_time;
+		while node_id < self.leaves_start_idx {
+			if self.nodes[Self::left_child(node_id)].total_durations_gray == 0 {
+				node_id = Self::right_child(node_id);
+			} else if self.nodes[Self::right_child(node_id)].total_durations_gray == 0 {
+				node_id = Self::left_child(node_id);
+			} else if self.nodes[Self::right_child(node_id)].earliest_completion_gray
+				>= earliest_completion_time
+			{
+				node_id = Self::right_child(node_id);
+			} else if self.nodes[Self::left_child(node_id)].earliest_completion
+				+ self.nodes[Self::right_child(node_id)].total_durations_gray
+				>= earliest_completion_time
+			{
+				// The binding task is to the left, blocked task contributes only to the sum
+				earliest_completion_time -=
+					self.nodes[Self::left_child(node_id)].earliest_completion;
+				node_id = Self::right_child(node_id);
+				while node_id < self.leaves_start_idx {
+					if self.nodes[Self::left_child(node_id)].total_durations_gray
+						+ self.nodes[Self::right_child(node_id)].total_durations
+						== earliest_completion_time
+					{
+						earliest_completion_time -=
+							self.nodes[Self::right_child(node_id)].total_durations;
+						node_id = Self::left_child(node_id);
+					} else if self.nodes[Self::left_child(node_id)].total_durations
+						+ self.nodes[Self::right_child(node_id)].total_durations_gray
+						>= earliest_completion_time
+					{
+						earliest_completion_time -=
+							self.nodes[Self::left_child(node_id)].total_durations;
+						node_id = Self::right_child(node_id);
+					} else {
+						unreachable!("unexpected case");
+					}
+				}
+				break;
+			} else {
+				earliest_completion_time -= self.nodes[Self::right_child(node_id)].total_durations;
+				node_id = Self::left_child(node_id);
+			}
+		}
+		node_id - self.leaves_start_idx
+	}
 
-impl Poster for DisjunctiveEdgeFindingPoster {
-	fn post<I: InitializationActions>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		let n = self.start_times.len();
-		let prop = DisjunctiveStrictEdgeFinding {
-			start_times: self.start_times,
-			durations: self.durations,
-			tasks_sorted_earliest_start: (0..n).collect(),
-			tasks_sorted_lastest_completion: (0..n).collect(),
-			task_rankings_by_earliest_start: (0..n).collect(),
-			ot_tree: OmegaThetaTree::new(n),
-			trailed_info: (0..n)
-				.map(|_| TaskInfo {
-					earliest_start: actions.new_trailed_int(0),
-					latest_completion: actions.new_trailed_int(0),
-				})
-				.collect(),
-		};
-
-		for &v in prop.start_times.iter() {
-			actions.enqueue_on_int_change(v, IntPropCond::Bounds);
+	/// Fill the tree with task are sorted by earliest start time.
+	fn fill(&mut self, sorted_tasks: &[usize], sorted_time: &[i32], durations: &[i64]) {
+		let n = sorted_tasks.len();
+		// fill the leave nodes
+		for i in 0..n {
+			let idx = self.leaves_start_idx + i;
+			let ect = sorted_time[i] + durations[sorted_tasks[i]] as i32;
+			self.nodes[idx].total_durations = durations[sorted_tasks[i]] as i32;
+			self.nodes[idx].earliest_completion = ect;
+			self.nodes[idx].total_durations_gray = durations[sorted_tasks[i]] as i32;
+			self.nodes[idx].earliest_completion_gray = ect;
 		}
 
-		Ok((
-			Box::new(prop),
-			QueuePreferences {
-				enqueue_on_post: true,
-				priority: PriorityLevel::Low,
-			},
-		))
+		// update internal nodes in a bottom-up fashion
+		(0..self.leaves_start_idx).rev().for_each(|i| {
+			self.update_internal_node(i);
+		});
+	}
+
+	/// Finding the task responsible for min{est_S, est_i} where
+	/// - S is the set of tasks in the tree
+	/// - task i is one of the gray task in the tree
+	fn gray_est_responsible_task(&self, earliest_completion_time: i32) -> usize {
+		assert!(self.nodes[0].earliest_completion <= earliest_completion_time);
+		assert!(self.nodes[0].earliest_completion_gray >= earliest_completion_time);
+		let mut node_id = 0;
+		let mut earliest_completion_time = earliest_completion_time;
+		while node_id < self.leaves_start_idx {
+			let left_child = Self::left_child(node_id);
+			let right_child = Self::right_child(node_id);
+			if self.nodes[right_child].earliest_completion_gray >= earliest_completion_time {
+				node_id = right_child;
+			} else if self.nodes[left_child].earliest_completion
+				+ self.nodes[right_child].total_durations_gray
+				>= earliest_completion_time
+			{
+				return self.binding_task(
+					earliest_completion_time - self.nodes[right_child].total_durations_gray,
+					left_child,
+				);
+			} else {
+				earliest_completion_time -= self.nodes[right_child].total_durations;
+				node_id = left_child;
+			}
+		}
+		node_id - self.leaves_start_idx
+	}
+	#[inline]
+	/// Calculate the index of the left child of a node `i`
+	fn left_child(i: usize) -> usize {
+		(i << 1) + 1
+	}
+
+	/// Create a new OmegaThetaTree with `tasks_no` tasks.
+	pub(crate) fn new(tasks_no: usize) -> Self {
+		let tree_size = (1 << (33 - (tasks_no as i32 - 1).leading_zeros())) - 1;
+		OmegaThetaTree {
+			nodes: vec![
+				OmegaThetaTreeNode {
+					total_durations: 0,
+					earliest_completion: i32::MIN,
+					total_durations_gray: 0,
+					earliest_completion_gray: i32::MIN,
+				};
+				tree_size
+			],
+			leaves_start_idx: tree_size / 2,
+		}
+	}
+
+	#[inline]
+	/// Calculate the index of the parent of a node `i`
+	fn parent(i: usize) -> usize {
+		debug_assert_ne!(i, 0);
+		(i - 1) >> 1
+	}
+
+	/// Update node `i` and trigger the update of its parent recursively.
+	fn recursive_update(&mut self, i: usize) {
+		if i == 0 {
+			return;
+		}
+		let parent = Self::parent(i);
+		self.update_internal_node(parent);
+		self.recursive_update(parent);
+	}
+
+	/// Remove the task at index `i` from the tree.
+	fn remove_task(&mut self, i: usize) {
+		assert!(self.leaves_start_idx + i < self.nodes.len());
+		let idx = self.leaves_start_idx + i;
+		self.nodes[idx].total_durations = 0;
+		self.nodes[idx].earliest_completion = i32::MIN;
+		self.nodes[idx].total_durations_gray = 0;
+		self.nodes[idx].earliest_completion_gray = i32::MIN;
+		self.recursive_update(idx);
+	}
+
+	#[inline]
+	/// Calculate the index of the right child of a node `i`
+	fn right_child(i: usize) -> usize {
+		(i << 1) + 2
+	}
+
+	/// Return the root node of the tree.
+	fn root(&self) -> &OmegaThetaTreeNode {
+		&self.nodes[0]
+	}
+
+	/// Update the internal node `i` based on its children.
+	fn update_internal_node(&mut self, i: usize) {
+		let left_child = Self::left_child(i);
+		let right_child = Self::right_child(i);
+		let left_total_durations = self.nodes[left_child].total_durations;
+		let right_total_durations = self.nodes[right_child].total_durations;
+		let left_total_durations_gray = self.nodes[left_child].total_durations_gray;
+		let right_total_durations_gray = self.nodes[right_child].total_durations_gray;
+		let left_earliest_completion = self.nodes[left_child].earliest_completion;
+		let right_earliest_completion = self.nodes[right_child].earliest_completion;
+		let left_earliest_completion_gray = self.nodes[left_child].earliest_completion_gray;
+		let right_earliest_completion_gray = self.nodes[right_child].earliest_completion_gray;
+
+		self.nodes[i].total_durations = left_total_durations + right_total_durations;
+		self.nodes[i].earliest_completion = i32::max(
+			right_earliest_completion,
+			left_earliest_completion + right_total_durations,
+		);
+		self.nodes[i].total_durations_gray = i32::max(
+			left_total_durations_gray + right_total_durations,
+			left_total_durations + right_total_durations_gray,
+		);
+		self.nodes[i].earliest_completion_gray = i32::max(
+			right_earliest_completion_gray,
+			i32::max(
+				left_earliest_completion + right_total_durations_gray,
+				left_earliest_completion_gray + right_total_durations,
+			),
+		);
 	}
 }
 

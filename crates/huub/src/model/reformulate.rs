@@ -102,15 +102,15 @@ impl InitConfig {
 	}
 }
 
-impl From<RawVar> for Variable {
-	fn from(value: RawVar) -> Self {
-		Self::Bool(value)
-	}
-}
-
 impl From<IntVar> for Variable {
 	fn from(value: IntVar) -> Self {
 		Self::Int(value)
+	}
+}
+
+impl From<RawVar> for Variable {
+	fn from(value: RawVar) -> Self {
+		Self::Bool(value)
 	}
 }
 
@@ -198,12 +198,6 @@ impl VariableMap {
 		}
 	}
 
-	/// Insert how an integer variable in the model is being mapped to an integer
-	/// view in the solver.
-	pub(crate) fn insert_int(&mut self, index: IntVar, elem: IntView) {
-		let _ = self.map.insert(index.into(), elem.into());
-	}
-
 	#[expect(
 		dead_code,
 		reason = "TODO: investigate whether this can be used for SAT rewriting"
@@ -211,6 +205,12 @@ impl VariableMap {
 	/// Insert a Boolean variable in the model that is being remapped to a
 	/// different Boolean view in the solver.
 	pub(crate) fn insert_bool(&mut self, index: RawVar, elem: BoolView) {
+		let _ = self.map.insert(index.into(), elem.into());
+	}
+
+	/// Insert how an integer variable in the model is being mapped to an integer
+	/// view in the solver.
+	pub(crate) fn insert_int(&mut self, index: IntVar, elem: IntView) {
 		let _ = self.map.insert(index.into(), elem.into());
 	}
 }

@@ -18,6 +18,22 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// General brancher for Boolean variables that makes search decision by
+/// following a given [`VariableSelection`] and [`ValueSelection`] strategy.
+pub(crate) struct BoolBrancher {
+	/// Boolean variables to be branched on.
+	vars: Vec<RawLit>,
+	/// [`VariableSelection`] strategy used to select the next decision variable
+	/// to branch on.
+	var_sel: VariableSelection,
+	/// [`ValueSelection`] strategy used to select the way in which to branch on
+	/// the selected decision variable.
+	val_sel: ValueSelection,
+	/// The start of the unfixed variables in `vars`.
+	next: TrailedInt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// [`BrancherPoster`] for [`BoolBrancher`].
 pub(crate) struct BoolBrancherPoster {
 	/// Boolean variables to be branched on.
@@ -34,22 +50,6 @@ pub(crate) struct BoolBrancherPoster {
 pub(crate) trait Brancher<D: DecisionActions>: DynBranchClone + Debug {
 	/// Make a next search decision using the given decision actions.
 	fn decide(&mut self, actions: &mut D) -> Decision;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// General brancher for Boolean variables that makes search decision by
-/// following a given [`VariableSelection`] and [`ValueSelection`] strategy.
-pub(crate) struct BoolBrancher {
-	/// Boolean variables to be branched on.
-	vars: Vec<RawLit>,
-	/// [`VariableSelection`] strategy used to select the next decision variable
-	/// to branch on.
-	var_sel: VariableSelection,
-	/// [`ValueSelection`] strategy used to select the way in which to branch on
-	/// the selected decision variable.
-	val_sel: ValueSelection,
-	/// The start of the unfixed variables in `vars`.
-	next: TrailedInt,
 }
 
 /// An search decision made by a [`Brancher`].

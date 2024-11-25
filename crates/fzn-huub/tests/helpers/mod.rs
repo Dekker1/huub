@@ -1,9 +1,89 @@
+macro_rules! assert_all_optimal {
+	($file:ident) => {
+		#[test]
+		fn $file() {
+			$crate::helpers::check_all_optimal(
+				&format!("./corpus/{}.fzn.json", stringify!($file)),
+				true,
+				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
+			)
+		}
+	};
+}
+
+macro_rules! assert_all_solutions {
+	($file:ident) => {
+		#[test]
+		fn $file() {
+			$crate::helpers::check_all_solutions(
+				&format!("./corpus/{}.fzn.json", stringify!($file)),
+				true,
+				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
+			)
+		}
+	};
+}
+
+macro_rules! assert_first_solution {
+	($file:ident) => {
+		#[test]
+		fn $file() {
+			$crate::helpers::check_final(
+				&format!("./corpus/{}.fzn.json", stringify!($file)),
+				false,
+				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
+			)
+		}
+	};
+}
+
+macro_rules! assert_optimal {
+	($file:ident) => {
+		#[test]
+		fn $file() {
+			$crate::helpers::check_final(
+				&format!("./corpus/{}.fzn.json", stringify!($file)),
+				true,
+				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
+			)
+		}
+	};
+}
+
+macro_rules! assert_search_order {
+	($file:ident) => {
+		#[test]
+		fn $file() {
+			$crate::helpers::check_all_solutions(
+				&format!("./corpus/{}.fzn.json", stringify!($file)),
+				false,
+				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
+			)
+		}
+	};
+}
+
+macro_rules! assert_unsat {
+	($file:ident) => {
+		#[test]
+		fn $file() {
+			$crate::helpers::check_unsat(&format!("./corpus/{}.fzn.json", stringify!($file)))
+		}
+	};
+}
+
 use std::{
 	env::{consts::EXE_SUFFIX, current_exe, var_os, vars},
 	path::PathBuf,
 	process::Command,
 };
 
+pub(crate) use assert_all_optimal;
+pub(crate) use assert_all_solutions;
+pub(crate) use assert_first_solution;
+pub(crate) use assert_optimal;
+pub(crate) use assert_search_order;
+pub(crate) use assert_unsat;
 use expect_test::ExpectFile;
 
 const FZN_COMPLETE: &str = "==========\n";
@@ -44,8 +124,8 @@ fn cargo_cmd<S: AsRef<str>>(name: S) -> Command {
 	}
 }
 
-pub(crate) fn check_all_solutions(file: &str, sort: bool, solns: ExpectFile) {
-	let output = fzn_huub(&["--all-solutions", file]).output().unwrap();
+pub(crate) fn check_all_optimal(file: &str, sort: bool, solns: ExpectFile) {
+	let output = fzn_huub(&["--all-optimal", file]).output().unwrap();
 	assert!(
 		output.status.success(),
 		"Solver did not finish with success exit code"
@@ -62,8 +142,8 @@ pub(crate) fn check_all_solutions(file: &str, sort: bool, solns: ExpectFile) {
 	solns.assert_eq(&stdout);
 }
 
-pub(crate) fn check_all_optimal(file: &str, sort: bool, solns: ExpectFile) {
-	let output = fzn_huub(&["--all-optimal", file]).output().unwrap();
+pub(crate) fn check_all_solutions(file: &str, sort: bool, solns: ExpectFile) {
+	let output = fzn_huub(&["--all-solutions", file]).output().unwrap();
 	assert!(
 		output.status.success(),
 		"Solver did not finish with success exit code"
@@ -122,83 +202,3 @@ pub(crate) fn fzn_huub(args: &[&str]) -> Command {
 	let _ = cmd.args(args);
 	cmd
 }
-
-macro_rules! assert_all_solutions {
-	($file:ident) => {
-		#[test]
-		fn $file() {
-			$crate::helpers::check_all_solutions(
-				&format!("./corpus/{}.fzn.json", stringify!($file)),
-				true,
-				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
-			)
-		}
-	};
-}
-pub(crate) use assert_all_solutions;
-
-macro_rules! assert_all_optimal {
-	($file:ident) => {
-		#[test]
-		fn $file() {
-			$crate::helpers::check_all_optimal(
-				&format!("./corpus/{}.fzn.json", stringify!($file)),
-				true,
-				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
-			)
-		}
-	};
-}
-pub(crate) use assert_all_optimal;
-
-macro_rules! assert_unsat {
-	($file:ident) => {
-		#[test]
-		fn $file() {
-			$crate::helpers::check_unsat(&format!("./corpus/{}.fzn.json", stringify!($file)))
-		}
-	};
-}
-pub(crate) use assert_unsat;
-
-macro_rules! assert_optimal {
-	($file:ident) => {
-		#[test]
-		fn $file() {
-			$crate::helpers::check_final(
-				&format!("./corpus/{}.fzn.json", stringify!($file)),
-				true,
-				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
-			)
-		}
-	};
-}
-pub(crate) use assert_optimal;
-
-macro_rules! assert_search_order {
-	($file:ident) => {
-		#[test]
-		fn $file() {
-			$crate::helpers::check_all_solutions(
-				&format!("./corpus/{}.fzn.json", stringify!($file)),
-				false,
-				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
-			)
-		}
-	};
-}
-pub(crate) use assert_search_order;
-
-macro_rules! assert_first_solution {
-	($file:ident) => {
-		#[test]
-		fn $file() {
-			$crate::helpers::check_final(
-				&format!("./corpus/{}.fzn.json", stringify!($file)),
-				false,
-				expect_test::expect_file![&format!("../corpus/{}.sol", stringify!($file))],
-			)
-		}
-	};
-}
-pub(crate) use assert_first_solution;

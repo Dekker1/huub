@@ -11,10 +11,7 @@ use crate::{
 	actions::{
 		DecisionActions, ExplanationActions, InspectionActions, PropagationActions, TrailingActions,
 	},
-	propagator::{
-		conflict::Conflict,
-		reason::{LazyReason, ReasonBuilder},
-	},
+	propagator::{Conflict, LazyReason, ReasonBuilder},
 	solver::{
 		engine::{
 			int_var::{IntVarRef, LazyLitDef},
@@ -27,6 +24,16 @@ use crate::{
 	},
 	BoolView, Clause, IntVal, IntView, LitMeaning,
 };
+
+/// Type used to communicate whether a change is redundant, conflicting, or new.
+enum ChangeType {
+	/// Change is redundant, no action needs to be taken.
+	Redundant,
+	/// Change is new and should be propagated.
+	New,
+	/// Change is conflicting, and a conflict should be raised.
+	Conflicting,
+}
 
 /// Structure to hold the internal [`State`] of the propagation engine and the
 /// [`SolvingActions`] exposed by the SAT oracle.
@@ -41,51 +48,7 @@ pub(crate) struct SolvingContext<'a> {
 	pub(crate) current_prop: PropRef,
 }
 
-/// Type used to communicate whether a change is redundant, conflicting, or new.
-enum ChangeType {
-	/// Change is redundant, no action needs to be taken.
-	Redundant,
-	/// Change is new and should be propagated.
-	New,
-	/// Change is conflicting, and a conflict should be raised.
-	Conflicting,
-}
-
 impl<'a> SolvingContext<'a> {
-	/// Create a new SolvingContext given the solver actions exposed by the SAT
-	/// oracle and the engine state.
-	pub(crate) fn new(slv: &'a mut dyn SolvingActions, state: &'a mut State) -> Self {
-		Self {
-			slv,
-			state,
-			current_prop: PropRef::new(u32::MAX as usize),
-		}
-	}
-
-	/// Run the propagators in the queue until a propagator detects a conflict,
-	/// returns literals to be propagated by the SAT oracle, or the queue is empty.
-	pub(crate) fn run_propagators(&mut self, propagators: &mut IndexVec<PropRef, BoxedPropagator>) {
-		while let Some(p) = self.state.propagator_queue.pop() {
-			debug_assert!(self.state.conflict.is_none());
-			self.state.enqueued[p] = false;
-			self.current_prop = p;
-			let prop = propagators[p].as_mut();
-			let res = prop.propagate(self);
-			self.state.statistics.propagations += 1;
-			self.current_prop = PropRef::new(u32::MAX as usize);
-			if let Err(Conflict { subject, reason }) = res {
-				let clause: Clause = reason.explain(propagators, self.state, subject);
-				trace!(clause = ?clause.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "conflict detected");
-				debug_assert!(!clause.is_empty());
-				debug_assert!(self.state.conflict.is_none());
-				self.state.conflict = Some(clause);
-			}
-			if self.state.conflict.is_some() || !self.state.propagation_queue.is_empty() {
-				return;
-			}
-		}
-	}
-
 	#[inline]
 	/// Check whether a change is redundant, conflicting, or new with respect to
 	/// the bounds of an integer variable
@@ -100,6 +63,39 @@ impl<'a> SolvingContext<'a> {
 			LitMeaning::Less(i) if *i > ub => ChangeType::Redundant,
 			LitMeaning::Less(i) if *i <= lb => ChangeType::Conflicting,
 			_ => ChangeType::New,
+		}
+	}
+
+	/// Create a new SolvingContext given the solver actions exposed by the SAT
+	/// oracle and the engine state.
+	pub(crate) fn new(slv: &'a mut dyn SolvingActions, state: &'a mut State) -> Self {
+		Self {
+			slv,
+			state,
+			current_prop: PropRef::new(u32::MAX as usize),
+		}
+	}
+
+	#[inline]
+	/// Internal method used to propagate a boolean variable used as a integer
+	/// given a literal description to be enforced.
+	fn propagate_bool_lin(
+		&mut self,
+		lit: RawLit,
+		lit_req: LitMeaning,
+		reason: impl ReasonBuilder<Self>,
+	) -> Result<(), Conflict> {
+		match lit_req {
+			LitMeaning::Eq(0) | LitMeaning::Less(1) | LitMeaning::NotEq(1) => {
+				self.set_bool(BoolView(BoolViewInner::Lit(!lit)), reason)
+			}
+			LitMeaning::Eq(1) | LitMeaning::GreaterEq(1) | LitMeaning::NotEq(0) => {
+				self.set_bool(BoolView(BoolViewInner::Lit(lit)), reason)
+			}
+			LitMeaning::Eq(_) => Err(Conflict::new(self, None, reason)),
+			LitMeaning::GreaterEq(i) if i > 1 => Err(Conflict::new(self, None, reason)),
+			LitMeaning::Less(i) if i <= 0 => Err(Conflict::new(self, None, reason)),
+			LitMeaning::NotEq(_) | LitMeaning::GreaterEq(_) | LitMeaning::Less(_) => Ok(()),
 		}
 	}
 
@@ -132,26 +128,27 @@ impl<'a> SolvingContext<'a> {
 		}
 	}
 
-	#[inline]
-	/// Internal method used to propagate a boolean variable used as a integer
-	/// given a literal description to be enforced.
-	fn propagate_bool_lin(
-		&mut self,
-		lit: RawLit,
-		lit_req: LitMeaning,
-		reason: impl ReasonBuilder<Self>,
-	) -> Result<(), Conflict> {
-		match lit_req {
-			LitMeaning::Eq(0) | LitMeaning::Less(1) | LitMeaning::NotEq(1) => {
-				self.set_bool(BoolView(BoolViewInner::Lit(!lit)), reason)
+	/// Run the propagators in the queue until a propagator detects a conflict,
+	/// returns literals to be propagated by the SAT oracle, or the queue is empty.
+	pub(crate) fn run_propagators(&mut self, propagators: &mut IndexVec<PropRef, BoxedPropagator>) {
+		while let Some(p) = self.state.propagator_queue.pop() {
+			debug_assert!(self.state.conflict.is_none());
+			self.state.enqueued[p] = false;
+			self.current_prop = p;
+			let prop = propagators[p].as_mut();
+			let res = prop.propagate(self);
+			self.state.statistics.propagations += 1;
+			self.current_prop = PropRef::new(u32::MAX as usize);
+			if let Err(Conflict { subject, reason }) = res {
+				let clause: Clause = reason.explain(propagators, self.state, subject);
+				trace!(clause = ?clause.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "conflict detected");
+				debug_assert!(!clause.is_empty());
+				debug_assert!(self.state.conflict.is_none());
+				self.state.conflict = Some(clause);
 			}
-			LitMeaning::Eq(1) | LitMeaning::GreaterEq(1) | LitMeaning::NotEq(0) => {
-				self.set_bool(BoolView(BoolViewInner::Lit(lit)), reason)
+			if self.state.conflict.is_some() || !self.state.propagation_queue.is_empty() {
+				return;
 			}
-			LitMeaning::Eq(_) => Err(Conflict::new(self, None, reason)),
-			LitMeaning::GreaterEq(i) if i > 1 => Err(Conflict::new(self, None, reason)),
-			LitMeaning::Less(i) if i <= 0 => Err(Conflict::new(self, None, reason)),
-			LitMeaning::NotEq(_) | LitMeaning::GreaterEq(_) | LitMeaning::Less(_) => Ok(()),
 		}
 	}
 }
@@ -186,6 +183,11 @@ impl DecisionActions for SolvingContext<'_> {
 }
 
 impl ExplanationActions for SolvingContext<'_> {
+	fn get_int_val_lit(&mut self, var: IntView) -> Option<BoolView> {
+		let val = self.get_int_val(var)?;
+		Some(self.get_int_lit(var, LitMeaning::Eq(val)))
+	}
+
 	delegate! {
 		to self.state {
 			fn try_int_lit(&self, var: IntView, meaning: LitMeaning) -> Option<BoolView>;
@@ -193,11 +195,6 @@ impl ExplanationActions for SolvingContext<'_> {
 			fn get_int_lower_bound_lit(&mut self, var: IntView) -> BoolView;
 			fn get_int_upper_bound_lit(&mut self, var: IntView) -> BoolView;
 		}
-	}
-
-	fn get_int_val_lit(&mut self, var: IntView) -> Option<BoolView> {
-		let val = self.get_int_val(var)?;
-		Some(self.get_int_lit(var, LitMeaning::Eq(val)))
 	}
 }
 
@@ -214,6 +211,9 @@ impl InspectionActions for SolvingContext<'_> {
 }
 
 impl PropagationActions for SolvingContext<'_> {
+	fn deferred_reason(&self, data: u64) -> LazyReason {
+		LazyReason(self.current_prop, data)
+	}
 	fn set_bool(&mut self, bv: BoolView, reason: impl ReasonBuilder<Self>) -> Result<(), Conflict> {
 		match bv.0 {
 			BoolViewInner::Lit(lit) => match self.state.trail.get_sat_value(lit) {
@@ -252,6 +252,39 @@ impl PropagationActions for SolvingContext<'_> {
 			IntViewInner::Bool { lit, .. } => self.propagate_bool_lin(lit, lit_req, reason),
 			IntViewInner::Const(i) => {
 				if i < val {
+					Err(Conflict::new(self, None, reason))
+				} else {
+					Ok(())
+				}
+			}
+		}
+	}
+	fn set_int_not_eq(
+		&mut self,
+		var: IntView,
+		val: IntVal,
+		reason: impl ReasonBuilder<Self>,
+	) -> Result<(), Conflict> {
+		let mut lit_req = LitMeaning::NotEq(val);
+		if let IntViewInner::Linear { transformer, .. } | IntViewInner::Bool { transformer, .. } =
+			var.0
+		{
+			match transformer.rev_transform_lit(lit_req) {
+				Ok(lit) => lit_req = lit,
+				Err(v) => {
+					debug_assert!(v);
+					return Ok(());
+				}
+			}
+		}
+
+		match var.0 {
+			IntViewInner::VarRef(iv) | IntViewInner::Linear { var: iv, .. } => {
+				self.propagate_int(iv, lit_req, reason)
+			}
+			IntViewInner::Bool { lit, .. } => self.propagate_bool_lin(lit, lit_req, reason),
+			IntViewInner::Const(i) => {
+				if i == val {
 					Err(Conflict::new(self, None, reason))
 				} else {
 					Ok(())
@@ -318,43 +351,6 @@ impl PropagationActions for SolvingContext<'_> {
 				}
 			}
 		}
-	}
-	fn set_int_not_eq(
-		&mut self,
-		var: IntView,
-		val: IntVal,
-		reason: impl ReasonBuilder<Self>,
-	) -> Result<(), Conflict> {
-		let mut lit_req = LitMeaning::NotEq(val);
-		if let IntViewInner::Linear { transformer, .. } | IntViewInner::Bool { transformer, .. } =
-			var.0
-		{
-			match transformer.rev_transform_lit(lit_req) {
-				Ok(lit) => lit_req = lit,
-				Err(v) => {
-					debug_assert!(v);
-					return Ok(());
-				}
-			}
-		}
-
-		match var.0 {
-			IntViewInner::VarRef(iv) | IntViewInner::Linear { var: iv, .. } => {
-				self.propagate_int(iv, lit_req, reason)
-			}
-			IntViewInner::Bool { lit, .. } => self.propagate_bool_lin(lit, lit_req, reason),
-			IntViewInner::Const(i) => {
-				if i == val {
-					Err(Conflict::new(self, None, reason))
-				} else {
-					Ok(())
-				}
-			}
-		}
-	}
-
-	fn deferred_reason(&self, data: u64) -> LazyReason {
-		LazyReason(self.current_prop, data)
 	}
 }
 

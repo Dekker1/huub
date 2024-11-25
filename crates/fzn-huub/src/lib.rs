@@ -1,4 +1,26 @@
 //! FlatZinc command line interface for the Huub solver.
+
+/// Write a message to an output stream, similar to `print!`.
+///
+/// Note that this differs from `write!` in that it will panic if writing to the
+/// stream fails.
+macro_rules! output {
+	($($arg:tt)*) => {
+		write!($($arg)*).expect("unable to write to output stream")
+	};
+}
+
+/// Write a message to an output stream with an added newline, similar to
+/// `println!`.
+///
+/// Note that this differs from `write!` in that it will panic if writing to the
+/// stream fails.
+macro_rules! outputln {
+	($($arg:tt)*) => {
+		writeln!($($arg)*).expect("unable to write to output stream")
+	};
+}
+
 mod trace;
 
 use std::{
@@ -37,27 +59,6 @@ const FZN_SEPERATOR: &str = "----------";
 const FZN_UNKNOWN: &str = "=====UNKNOWN=====";
 /// Status message to output when a problem is proven to be unsatisfiable.
 const FZN_UNSATISFIABLE: &str = "=====UNSATISFIABLE=====";
-
-/// Write a message to an output stream, similar to `print!`.
-///
-/// Note that this differs from `write!` in that it will panic if writing to the
-/// stream fails.
-macro_rules! output {
-	($($arg:tt)*) => {
-		write!($($arg)*).expect("unable to write to output stream")
-	};
-}
-
-/// Write a message to an output stream with an added newline, similar to
-/// `println!`.
-///
-/// Note that this differs from `write!` in that it will panic if writing to the
-/// stream fails.
-macro_rules! outputln {
-	($($arg:tt)*) => {
-		writeln!($($arg)*).expect("unable to write to output stream")
-	};
-}
 
 /// FlatZinc command line interface for the Huub solver
 ///
@@ -554,6 +555,7 @@ where
 
 impl TryFrom<Arguments> for Cli<io::Stdout, fn() -> io::Stderr> {
 	type Error = String;
+
 	fn try_from(mut args: Arguments) -> Result<Self, Self::Error> {
 		let mut verbose = 0;
 		while args.contains(["-v", "--verbose"]) {

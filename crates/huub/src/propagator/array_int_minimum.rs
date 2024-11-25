@@ -5,7 +5,7 @@ use itertools::Itertools;
 
 use crate::{
 	actions::{ExplanationActions, InitializationActions},
-	propagator::{conflict::Conflict, PropagationActions, Propagator},
+	propagator::{Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
 		poster::{BoxedPropagator, Poster, QueuePreferences},
@@ -18,6 +18,14 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Bounds cosistent propagator for the `array_int_minimum` constraint.
 pub(crate) struct ArrayIntMinimumBounds {
+	/// Set of variable from which the mimimum must be taken
+	vars: Vec<IntView>,
+	/// Variable that represents the minimum value
+	min: IntView,
+}
+
+/// [`Poster`] for the [`ArrayIntMinimumBounds`] propagator.
+struct ArrayIntMinimumBoundsPoster {
 	/// Set of variable from which the mimimum must be taken
 	vars: Vec<IntView>,
 	/// Variable that represents the minimum value
@@ -85,14 +93,6 @@ where
 	}
 }
 
-/// [`Poster`] for the [`ArrayIntMinimumBounds`] propagator.
-struct ArrayIntMinimumBoundsPoster {
-	/// Set of variable from which the mimimum must be taken
-	vars: Vec<IntView>,
-	/// Variable that represents the minimum value
-	min: IntView,
-}
-
 impl Poster for ArrayIntMinimumBoundsPoster {
 	fn post<I: InitializationActions>(
 		self,
@@ -123,42 +123,6 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{model::ModelView, Constraint, InitConfig, Model};
-
-	#[test]
-	#[traced_test]
-	fn test_minimum_sat() {
-		let mut prb = Model::default();
-		let a = prb.new_int_var((3..=4).into());
-		let b = prb.new_int_var((2..=3).into());
-		let c = prb.new_int_var((2..=3).into());
-		let y = prb.new_int_var((3..=4).into());
-
-		prb += Constraint::ArrayIntMinimum(vec![a.clone(), b.clone(), c.clone()], y.clone());
-		let (mut slv, map) = prb.to_solver(&InitConfig::default()).unwrap();
-		let vars = vec![a, b, c, y]
-			.into_iter()
-			.map(|x| map.get(&mut slv, &ModelView::from(x)))
-			.collect_vec();
-		slv.expect_solutions(
-			&vars,
-			expect![[r#"
-		3, 3, 3, 3
-		4, 3, 3, 3"#]],
-		);
-	}
-
-	#[test]
-	#[traced_test]
-	fn test_minimum_unsat() {
-		let mut prb = Model::default();
-		let a = prb.new_int_var((3..=5).into());
-		let b = prb.new_int_var((4..=5).into());
-		let c = prb.new_int_var((4..=10).into());
-		let y = prb.new_int_var((1..=2).into());
-
-		prb += Constraint::ArrayIntMinimum(vec![a, b, c], y);
-		prb.assert_unsatisfiable();
-	}
 
 	#[test]
 	#[traced_test]
@@ -198,6 +162,42 @@ mod tests {
 		let y = prb.new_int_var((13..=20).into());
 
 		prb += Constraint::ArrayIntMaximum(vec![a, b, c], y);
+		prb.assert_unsatisfiable();
+	}
+
+	#[test]
+	#[traced_test]
+	fn test_minimum_sat() {
+		let mut prb = Model::default();
+		let a = prb.new_int_var((3..=4).into());
+		let b = prb.new_int_var((2..=3).into());
+		let c = prb.new_int_var((2..=3).into());
+		let y = prb.new_int_var((3..=4).into());
+
+		prb += Constraint::ArrayIntMinimum(vec![a.clone(), b.clone(), c.clone()], y.clone());
+		let (mut slv, map) = prb.to_solver(&InitConfig::default()).unwrap();
+		let vars = vec![a, b, c, y]
+			.into_iter()
+			.map(|x| map.get(&mut slv, &ModelView::from(x)))
+			.collect_vec();
+		slv.expect_solutions(
+			&vars,
+			expect![[r#"
+		3, 3, 3, 3
+		4, 3, 3, 3"#]],
+		);
+	}
+
+	#[test]
+	#[traced_test]
+	fn test_minimum_unsat() {
+		let mut prb = Model::default();
+		let a = prb.new_int_var((3..=5).into());
+		let b = prb.new_int_var((4..=5).into());
+		let c = prb.new_int_var((4..=10).into());
+		let y = prb.new_int_var((1..=2).into());
+
+		prb += Constraint::ArrayIntMinimum(vec![a, b, c], y);
 		prb.assert_unsatisfiable();
 	}
 }

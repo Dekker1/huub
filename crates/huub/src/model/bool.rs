@@ -51,6 +51,32 @@ pub enum BoolExpr {
 	},
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[allow(
+	variant_size_differences,
+	reason = "`bool` is smaller than all other variants"
+)]
+/// A Boolean expression that is represented using a literal or a constaint in
+/// the oracle SAT solver.
+pub enum BoolView {
+	/// A Boolean decision variable or its negation.
+	Lit(RawLit),
+	/// A constant Boolean value.
+	Const(bool),
+	/// Wether an integer is equal to a constant.
+	IntEq(Box<int::IntView>, IntVal),
+	/// Wether an integer is greater than a constant.
+	IntGreater(Box<int::IntView>, IntVal),
+	/// Wether an integer is greater or equal to a constant.
+	IntGreaterEq(Box<int::IntView>, IntVal),
+	/// Wether an integer is less than a constant.
+	IntLess(Box<int::IntView>, IntVal),
+	/// Wether an integer is less or equal to a constant.
+	IntLessEq(Box<int::IntView>, IntVal),
+	/// Wether an integer is not equal to a constant.
+	IntNotEq(Box<int::IntView>, IntVal),
+}
+
 impl BoolExpr {
 	/// Add clauses to the solver to enforce the Boolean expression.
 	pub(crate) fn constrain<Oracle: PropagatingSolver<Engine>>(
@@ -176,6 +202,35 @@ impl BoolExpr {
 				.constrain(slv, map),
 			},
 		}
+	}
+
+	/// Helper function that takes an expression that was contains in a
+	/// [`BoolExpr::Not`] and return an equivalent expression that is equivalent
+	/// to the negation of the original expression by pushing the negation
+	/// inwards. If this is not possible, then `None` is returned.
+	fn push_not_inward(&self) -> Option<BoolExpr> {
+		Some(match self {
+			BoolExpr::View(v) => BoolExpr::View(!v),
+			BoolExpr::Not(e) => *e.clone(),
+			BoolExpr::Or(es) => BoolExpr::And(es.iter().map(|e| !e).collect()),
+			BoolExpr::And(es) => BoolExpr::Or(es.iter().map(|e| !e).collect()),
+			BoolExpr::Implies(a, b) => BoolExpr::And(vec![*a.clone(), !*b.clone()]),
+			BoolExpr::IfThenElse { cond, then, els } => BoolExpr::IfThenElse {
+				cond: cond.clone(),
+				then: Box::new(!*then.clone()),
+				els: Box::new(!*els.clone()),
+			},
+			BoolExpr::Xor(es) => {
+				BoolExpr::Xor(once(true.into()).chain(es.iter().cloned()).collect())
+			}
+			BoolExpr::Equiv(es) => {
+				if let [a, b] = es.as_slice() {
+					BoolExpr::Xor(vec![a.clone(), b.clone()])
+				} else {
+					return None;
+				}
+			}
+		})
 	}
 
 	/// Reifies the Boolean expression into a Boolean view (which will be a
@@ -358,39 +413,27 @@ impl BoolExpr {
 			}
 		}
 	}
+}
+impl From<&BoolView> for BoolExpr {
+	fn from(v: &BoolView) -> Self {
+		Self::View(v.clone())
+	}
+}
+impl From<BoolView> for BoolExpr {
+	fn from(v: BoolView) -> Self {
+		Self::View(v)
+	}
+}
 
-	/// Helper function that takes an expression that was contains in a
-	/// [`BoolExpr::Not`] and return an equivalent expression that is equivalent
-	/// to the negation of the original expression by pushing the negation
-	/// inwards. If this is not possible, then `None` is returned.
-	fn push_not_inward(&self) -> Option<BoolExpr> {
-		Some(match self {
-			BoolExpr::View(v) => BoolExpr::View(!v),
-			BoolExpr::Not(e) => *e.clone(),
-			BoolExpr::Or(es) => BoolExpr::And(es.iter().map(|e| !e).collect()),
-			BoolExpr::And(es) => BoolExpr::Or(es.iter().map(|e| !e).collect()),
-			BoolExpr::Implies(a, b) => BoolExpr::And(vec![*a.clone(), !*b.clone()]),
-			BoolExpr::IfThenElse { cond, then, els } => BoolExpr::IfThenElse {
-				cond: cond.clone(),
-				then: Box::new(!*then.clone()),
-				els: Box::new(!*els.clone()),
-			},
-			BoolExpr::Xor(es) => {
-				BoolExpr::Xor(once(true.into()).chain(es.iter().cloned()).collect())
-			}
-			BoolExpr::Equiv(es) => {
-				if let [a, b] = es.as_slice() {
-					BoolExpr::Xor(vec![a.clone(), b.clone()])
-				} else {
-					return None;
-				}
-			}
-		})
+impl From<bool> for BoolExpr {
+	fn from(v: bool) -> Self {
+		Self::View(v.into())
 	}
 }
 
 impl Not for BoolExpr {
 	type Output = BoolExpr;
+
 	fn not(self) -> Self::Output {
 		match self {
 			BoolExpr::View(v) => BoolExpr::View(!v),
@@ -402,51 +445,10 @@ impl Not for BoolExpr {
 
 impl Not for &BoolExpr {
 	type Output = BoolExpr;
+
 	fn not(self) -> Self::Output {
 		!self.clone()
 	}
-}
-
-impl From<bool> for BoolExpr {
-	fn from(v: bool) -> Self {
-		Self::View(v.into())
-	}
-}
-impl From<BoolView> for BoolExpr {
-	fn from(v: BoolView) -> Self {
-		Self::View(v)
-	}
-}
-impl From<&BoolView> for BoolExpr {
-	fn from(v: &BoolView) -> Self {
-		Self::View(v.clone())
-	}
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[allow(
-	variant_size_differences,
-	reason = "`bool` is smaller than all other variants"
-)]
-/// A Boolean expression that is represented using a literal or a constaint in
-/// the oracle SAT solver.
-pub enum BoolView {
-	/// A Boolean decision variable or its negation.
-	Lit(RawLit),
-	/// A constant Boolean value.
-	Const(bool),
-	/// Wether an integer is equal to a constant.
-	IntEq(Box<int::IntView>, IntVal),
-	/// Wether an integer is greater than a constant.
-	IntGreater(Box<int::IntView>, IntVal),
-	/// Wether an integer is greater or equal to a constant.
-	IntGreaterEq(Box<int::IntView>, IntVal),
-	/// Wether an integer is less than a constant.
-	IntLess(Box<int::IntView>, IntVal),
-	/// Wether an integer is less or equal to a constant.
-	IntLessEq(Box<int::IntView>, IntVal),
-	/// Wether an integer is not equal to a constant.
-	IntNotEq(Box<int::IntView>, IntVal),
 }
 
 impl From<bool> for BoolView {
@@ -457,6 +459,7 @@ impl From<bool> for BoolView {
 
 impl Not for BoolView {
 	type Output = BoolView;
+
 	fn not(self) -> Self::Output {
 		match self {
 			BoolView::Lit(l) => BoolView::Lit(!l),
@@ -473,6 +476,7 @@ impl Not for BoolView {
 
 impl Not for &BoolView {
 	type Output = BoolView;
+
 	fn not(self) -> Self::Output {
 		!(self.clone())
 	}
@@ -519,6 +523,122 @@ mod tests {
 		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
 		let vars = vec![map.get(&mut slv, &b.into())];
 		slv.expect_solutions(&vars, expect!["true"]);
+	}
+
+	#[test]
+	fn test_bool_and_reif() {
+		// Simple Satisfiable test case
+		let mut m = Model::default();
+		let b = m.new_bool_vars(3);
+
+		m += BoolExpr::Equiv(vec![
+			b[0].clone().into(),
+			BoolExpr::And(vec![b[1].clone().into(), b[2].clone().into()]),
+		]);
+		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
+		let vars: Vec<_> = b
+			.into_iter()
+			.map(|x| map.get(&mut slv, &x.into()))
+			.collect();
+		slv.expect_solutions(
+			&vars,
+			expect![[r#"
+		false, false, false
+		false, false, true
+		false, true, false
+		true, true, true"#]],
+		);
+	}
+
+	#[test]
+	fn test_bool_clause_reif() {
+		// Simple Satisfiable test case
+		let mut m = Model::default();
+		let b = m.new_bool_vars(3);
+
+		m += BoolExpr::Equiv(vec![
+			b[0].clone().into(),
+			BoolExpr::Or(vec![b[1].clone().into(), b[2].clone().into()]),
+		]);
+		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
+		let vars: Vec<_> = b
+			.into_iter()
+			.map(|x| map.get(&mut slv, &x.into()))
+			.collect();
+		slv.expect_solutions(
+			&vars,
+			expect![[r#"
+		false, false, false
+		true, false, true
+		true, true, false
+		true, true, true"#]],
+		);
+	}
+
+	#[test]
+	fn test_bool_eq_reif() {
+		// Simple Satisfiable test case
+		let mut m = Model::default();
+		let b = m.new_bool_vars(3);
+
+		m += BoolExpr::Equiv(vec![
+			b[0].clone().into(),
+			BoolExpr::Equiv(vec![b[1].clone().into(), b[2].clone().into()]),
+		]);
+		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
+		let vars: Vec<_> = b
+			.into_iter()
+			.map(|x| map.get(&mut slv, &x.into()))
+			.collect();
+		slv.expect_solutions(
+			&vars,
+			expect![[r#"
+		false, false, true
+		false, true, false
+		true, false, false
+		true, true, true"#]],
+		);
+	}
+
+	#[test]
+	fn test_bool_not() {
+		// Satisfiable test case that rewrites the expression
+		let mut m = Model::default();
+		let b = m.new_bool_vars(2);
+
+		m += BoolExpr::Not(Box::new(BoolExpr::Xor(b.iter().map_into().collect())));
+		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
+		let vars: Vec<_> = b
+			.into_iter()
+			.map(|x| map.get(&mut slv, &x.into()))
+			.collect();
+		slv.expect_solutions(
+			&vars,
+			expect![[r#"
+    false, false
+    true, true"#]],
+		);
+
+		// Simple Satisfiable test case that reifies the test case
+		let mut m = Model::default();
+		let b = m.new_bool_vars(3);
+
+		m += BoolExpr::Not(Box::new(BoolExpr::Equiv(b.iter().map_into().collect())));
+		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
+		let vars: Vec<_> = b
+			.into_iter()
+			.map(|x| map.get(&mut slv, &x.into()))
+			.collect();
+		slv.expect_solutions(
+			&vars,
+			expect![[r#"
+    false, false, true
+    false, true, false
+    false, true, true
+    true, false, false
+    true, false, true
+    true, true, false"#]],
+		);
 	}
 
 	#[test]
@@ -620,121 +740,5 @@ mod tests {
 		m += BoolExpr::from(!b[1].clone());
 		let (mut slv, _): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
 		slv.assert_unsatisfiable();
-	}
-
-	#[test]
-	fn test_bool_eq_reif() {
-		// Simple Satisfiable test case
-		let mut m = Model::default();
-		let b = m.new_bool_vars(3);
-
-		m += BoolExpr::Equiv(vec![
-			b[0].clone().into(),
-			BoolExpr::Equiv(vec![b[1].clone().into(), b[2].clone().into()]),
-		]);
-		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
-		let vars: Vec<_> = b
-			.into_iter()
-			.map(|x| map.get(&mut slv, &x.into()))
-			.collect();
-		slv.expect_solutions(
-			&vars,
-			expect![[r#"
-		false, false, true
-		false, true, false
-		true, false, false
-		true, true, true"#]],
-		);
-	}
-
-	#[test]
-	fn test_bool_and_reif() {
-		// Simple Satisfiable test case
-		let mut m = Model::default();
-		let b = m.new_bool_vars(3);
-
-		m += BoolExpr::Equiv(vec![
-			b[0].clone().into(),
-			BoolExpr::And(vec![b[1].clone().into(), b[2].clone().into()]),
-		]);
-		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
-		let vars: Vec<_> = b
-			.into_iter()
-			.map(|x| map.get(&mut slv, &x.into()))
-			.collect();
-		slv.expect_solutions(
-			&vars,
-			expect![[r#"
-		false, false, false
-		false, false, true
-		false, true, false
-		true, true, true"#]],
-		);
-	}
-
-	#[test]
-	fn test_bool_clause_reif() {
-		// Simple Satisfiable test case
-		let mut m = Model::default();
-		let b = m.new_bool_vars(3);
-
-		m += BoolExpr::Equiv(vec![
-			b[0].clone().into(),
-			BoolExpr::Or(vec![b[1].clone().into(), b[2].clone().into()]),
-		]);
-		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
-		let vars: Vec<_> = b
-			.into_iter()
-			.map(|x| map.get(&mut slv, &x.into()))
-			.collect();
-		slv.expect_solutions(
-			&vars,
-			expect![[r#"
-		false, false, false
-		true, false, true
-		true, true, false
-		true, true, true"#]],
-		);
-	}
-
-	#[test]
-	fn test_bool_not() {
-		// Satisfiable test case that rewrites the expression
-		let mut m = Model::default();
-		let b = m.new_bool_vars(2);
-
-		m += BoolExpr::Not(Box::new(BoolExpr::Xor(b.iter().map_into().collect())));
-		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
-		let vars: Vec<_> = b
-			.into_iter()
-			.map(|x| map.get(&mut slv, &x.into()))
-			.collect();
-		slv.expect_solutions(
-			&vars,
-			expect![[r#"
-    false, false
-    true, true"#]],
-		);
-
-		// Simple Satisfiable test case that reifies the test case
-		let mut m = Model::default();
-		let b = m.new_bool_vars(3);
-
-		m += BoolExpr::Not(Box::new(BoolExpr::Equiv(b.iter().map_into().collect())));
-		let (mut slv, map): (Solver, _) = m.to_solver(&InitConfig::default()).unwrap();
-		let vars: Vec<_> = b
-			.into_iter()
-			.map(|x| map.get(&mut slv, &x.into()))
-			.collect();
-		slv.expect_solutions(
-			&vars,
-			expect![[r#"
-    false, false, true
-    false, true, false
-    false, true, true
-    true, false, false
-    true, false, true
-    true, true, false"#]],
-		);
 	}
 }

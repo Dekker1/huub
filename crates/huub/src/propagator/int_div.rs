@@ -7,7 +7,7 @@ use std::mem;
 use crate::{
 	actions::{ExplanationActions, InitializationActions},
 	helpers::div_ceil,
-	propagator::{conflict::Conflict, PropagationActions, Propagator},
+	propagator::{Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
 		poster::{BoxedPropagator, Poster, QueuePreferences},

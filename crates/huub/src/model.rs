@@ -54,7 +54,24 @@ pub struct Model {
 	enqueued: Vec<bool>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Reference to a decision in a [`Model`].
+pub enum ModelView {
+	/// Reference to a Boolean decision.
+	Bool(BoolView),
+	/// Reference to an integer decision.
+	Int(IntView),
+}
+
 impl Model {
+	/// Enqueue constraint that has index `constraint` to the propagation queue.
+	fn enqueue(&mut self, constraint: usize) {
+		if !self.enqueued[constraint] {
+			self.prop_queue.push_back(constraint);
+			self.enqueued[constraint] = true;
+		}
+	}
+
 	/// Create a new Boolean variable.
 	pub fn new_bool_var(&mut self) -> BoolView {
 		BoolView::Lit(self.cnf.new_lit())
@@ -171,23 +188,6 @@ impl Model {
 
 		Ok((slv, map))
 	}
-
-	/// Enqueue constraint that has index `constraint` to the propagation queue.
-	fn enqueue(&mut self, constraint: usize) {
-		if !self.enqueued[constraint] {
-			self.prop_queue.push_back(constraint);
-			self.enqueued[constraint] = true;
-		}
-	}
-}
-
-impl AddAssign<Constraint> for Model {
-	fn add_assign(&mut self, rhs: Constraint) {
-		self.constraints.push(rhs);
-		self.enqueued.push(false);
-		self.enqueue(self.constraints.len() - 1);
-		self.subscribe(self.constraints.len() - 1);
-	}
 }
 impl AddAssign<BoolExpr> for Model {
 	fn add_assign(&mut self, rhs: BoolExpr) {
@@ -201,38 +201,39 @@ impl AddAssign<Branching> for Model {
 	}
 }
 
-impl ClauseDatabase for Model {
-	fn new_var_range(&mut self, len: usize) -> pindakaas::VarRange {
-		self.cnf.new_var_range(len)
+impl AddAssign<Constraint> for Model {
+	fn add_assign(&mut self, rhs: Constraint) {
+		self.constraints.push(rhs);
+		self.enqueued.push(false);
+		self.enqueue(self.constraints.len() - 1);
+		self.subscribe(self.constraints.len() - 1);
 	}
+}
+
+impl ClauseDatabase for Model {
+	type CondDB = Model;
 
 	fn add_clause<I: IntoIterator<Item = RawLit>>(&mut self, cl: I) -> Result<(), Unsatisfiable> {
 		self.cnf.add_clause(cl)
 	}
 
-	type CondDB = Model;
+	fn new_var_range(&mut self, len: usize) -> pindakaas::VarRange {
+		self.cnf.new_var_range(len)
+	}
+
 	fn with_conditions(&mut self, conditions: Vec<RawLit>) -> ConditionalDatabase<Self::CondDB> {
 		ConditionalDatabase::new(self, conditions)
-	}
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-/// Reference to a decision in a [`Model`].
-pub enum ModelView {
-	/// Reference to a Boolean decision.
-	Bool(BoolView),
-	/// Reference to an integer decision.
-	Int(IntView),
-}
-
-impl From<IntView> for ModelView {
-	fn from(value: IntView) -> Self {
-		Self::Int(value)
 	}
 }
 
 impl From<BoolView> for ModelView {
 	fn from(value: BoolView) -> Self {
 		Self::Bool(value)
+	}
+}
+
+impl From<IntView> for ModelView {
+	fn from(value: IntView) -> Self {
+		Self::Int(value)
 	}
 }

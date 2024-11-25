@@ -7,10 +7,7 @@ use pindakaas::Lit as RawLit;
 use crate::{
 	actions::InitializationActions,
 	helpers::opt_field::OptField,
-	propagator::{
-		conflict::Conflict, reason::ReasonBuilder, ExplanationActions, PropagationActions,
-		Propagator,
-	},
+	propagator::{Conflict, ExplanationActions, PropagationActions, Propagator, ReasonBuilder},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
 		poster::{BoxedPropagator, Poster, QueuePreferences},
@@ -19,6 +16,14 @@ use crate::{
 	},
 	BoolView, ReformulationError,
 };
+
+/// Type alias for the reified version of the [`IntLinearNotEqValueImpl`]
+/// propagator.
+pub(crate) type IntLinearNotEqImpValue = IntLinearNotEqValueImpl<1>;
+
+/// Type alias for the non-reified version of the [`IntLinearNotEqValueImpl`]
+/// propagator.
+pub(crate) type IntLinearNotEqValue = IntLinearNotEqValueImpl<0>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Value consistent propagator for the `int_lin_ne` or `int_lin_ne_imp`
@@ -37,38 +42,15 @@ pub(crate) struct IntLinearNotEqValueImpl<const R: usize> {
 	num_fixed: TrailedInt,
 }
 
-/// Type alias for the non-reified version of the [`IntLinearNotEqValueImpl`]
+/// [`Poster`] for a the [`IntLinearNotEqValue`] or [`IntLinearNotEqImpValue`]
 /// propagator.
-pub(crate) type IntLinearNotEqValue = IntLinearNotEqValueImpl<0>;
-
-/// Type alias for the reified version of the [`IntLinearNotEqValueImpl`]
-/// propagator.
-pub(crate) type IntLinearNotEqImpValue = IntLinearNotEqValueImpl<1>;
-
-impl IntLinearNotEqValue {
-	/// Prepare the [`IntLinearNotEqValue`] propagator to be posted to the
-	/// solver.
-	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
-		vars: VI,
-		mut val: IntVal,
-	) -> impl Poster {
-		IntLinearNotEqValuePoster::<0> {
-			vars: vars
-				.into_iter()
-				.filter_map(|v| {
-					let v = v.into();
-					if let IntViewInner::Const(c) = v.0 {
-						val -= c;
-						None
-					} else {
-						Some(v)
-					}
-				})
-				.collect(),
-			val,
-			reification: Default::default(),
-		}
-	}
+struct IntLinearNotEqValuePoster<const R: usize> {
+	/// Variables in the sumation
+	vars: Vec<IntView>,
+	/// Value that the sum of the variables must not equal.
+	val: IntVal,
+	/// Optional reification variable implying the constraint.
+	reification: OptField<R, RawLit>,
 }
 
 impl IntLinearNotEqImpValue {
@@ -94,6 +76,32 @@ impl IntLinearNotEqImpValue {
 				.collect(),
 			val,
 			reification: OptField::new(r),
+		}
+	}
+}
+
+impl IntLinearNotEqValue {
+	/// Prepare the [`IntLinearNotEqValue`] propagator to be posted to the
+	/// solver.
+	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
+		vars: VI,
+		mut val: IntVal,
+	) -> impl Poster {
+		IntLinearNotEqValuePoster::<0> {
+			vars: vars
+				.into_iter()
+				.filter_map(|v| {
+					let v = v.into();
+					if let IntViewInner::Const(c) = v.0 {
+						val -= c;
+						None
+					} else {
+						Some(v)
+					}
+				})
+				.collect(),
+			val,
+			reification: Default::default(),
 		}
 	}
 }
@@ -166,17 +174,6 @@ where
 			Ok(())
 		}
 	}
-}
-
-/// [`Poster`] for a the [`IntLinearNotEqValue`] or [`IntLinearNotEqImpValue`]
-/// propagator.
-struct IntLinearNotEqValuePoster<const R: usize> {
-	/// Variables in the sumation
-	vars: Vec<IntView>,
-	/// Value that the sum of the variables must not equal.
-	val: IntVal,
-	/// Optional reification variable implying the constraint.
-	reification: OptField<R, RawLit>,
 }
 
 impl<const R: usize> Poster for IntLinearNotEqValuePoster<R> {

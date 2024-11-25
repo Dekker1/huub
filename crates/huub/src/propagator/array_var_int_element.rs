@@ -6,7 +6,7 @@ use itertools::Itertools;
 
 use crate::{
 	actions::{ExplanationActions, InitializationActions},
-	propagator::{conflict::Conflict, PropagationActions, Propagator},
+	propagator::{Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
 		poster::{BoxedPropagator, Poster, QueuePreferences},
@@ -29,6 +29,16 @@ pub(crate) struct ArrayVarIntElementBounds {
 	min_support: TrailedInt,
 	/// The index of the variable that supports the upper bound of the result
 	max_support: TrailedInt,
+}
+
+/// [`Poster`] for the [`ArrayVarIntElementBounds`] propagator.
+struct ArrayVarIntElementBoundsPoster {
+	/// The variable representing the index
+	index: IntView,
+	/// The result variable
+	result: IntView,
+	/// The array of variables
+	vars: Vec<IntView>,
 }
 
 impl ArrayVarIntElementBounds {
@@ -193,16 +203,6 @@ where
 	}
 }
 
-/// [`Poster`] for the [`ArrayVarIntElementBounds`] propagator.
-struct ArrayVarIntElementBoundsPoster {
-	/// The variable representing the index
-	index: IntView,
-	/// The result variable
-	result: IntView,
-	/// The array of variables
-	vars: Vec<IntView>,
-}
-
 impl Poster for ArrayVarIntElementBoundsPoster {
 	fn post<I: InitializationActions>(
 		self,
@@ -327,20 +327,6 @@ mod tests {
 
 	#[test]
 	#[traced_test]
-	fn test_element_unsat() {
-		let mut prb = Model::default();
-		let a = prb.new_int_var((3..=5).into());
-		let b = prb.new_int_var((4..=5).into());
-		let c = prb.new_int_var((4..=10).into());
-		let y = prb.new_int_var((1..=2).into());
-		let index = prb.new_int_var((0..=2).into());
-
-		prb += Constraint::ArrayVarIntElement(vec![a, b, c], index, y);
-		prb.assert_unsatisfiable();
-	}
-
-	#[test]
-	#[traced_test]
 	fn test_element_holes() {
 		let mut slv = Solver::<PropagatingCadical<_>>::from(&Cnf::default());
 		let a = IntVar::new_in(
@@ -377,5 +363,19 @@ mod tests {
     0, 3, 3, 2
     0, 3, 3, 3"#]],
 		);
+	}
+
+	#[test]
+	#[traced_test]
+	fn test_element_unsat() {
+		let mut prb = Model::default();
+		let a = prb.new_int_var((3..=5).into());
+		let b = prb.new_int_var((4..=5).into());
+		let c = prb.new_int_var((4..=10).into());
+		let y = prb.new_int_var((1..=2).into());
+		let index = prb.new_int_var((0..=2).into());
+
+		prb += Constraint::ArrayVarIntElement(vec![a, b, c], index, y);
+		prb.assert_unsatisfiable();
 	}
 }

@@ -9,19 +9,8 @@ use crate::{
 	helpers::linear_transform::LinearTransform,
 	model::{bool::BoolView, reformulate::VariableMap},
 	solver::{engine::Engine, view},
-	IntVal, LitMeaning, Model, NonZeroIntVal, ReformulationError, Solver,
+	IntSetVal, IntVal, LitMeaning, Model, NonZeroIntVal, ReformulationError, Solver,
 };
-
-impl IntView {
-	/// Get the [`view::IntView`] to which the `IntView` will be mapped.
-	pub(crate) fn to_arg<Oracle: PropagatingSolver<Engine>>(
-		&self,
-		slv: &mut Solver<Oracle>,
-		map: &mut VariableMap,
-	) -> view::IntView {
-		map.get_int(slv, self)
-	}
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Reference type for integer decision variables in a [`Model`].
@@ -31,22 +20,12 @@ pub struct IntVar(pub(crate) u32);
 /// Defintition of an integer decision variable in a [`Model`].
 pub(crate) struct IntVarDef {
 	/// The set of possible values that the variable can take.
-	pub(crate) domain: RangeList<IntVal>,
+	pub(crate) domain: IntSetVal,
 	/// The list of (indexes of) constraints in which the variable appears.
 	///
 	/// This list is used to enqueue the constraints for propagation when the
 	/// domain of the variable changes.
 	pub(crate) constraints: Vec<usize>,
-}
-
-impl IntVarDef {
-	/// Create a new integer variable definition with the given domain.
-	pub(crate) fn with_domain(dom: RangeList<IntVal>) -> Self {
-		Self {
-			domain: dom,
-			constraints: Vec::new(),
-		}
-	}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -62,51 +41,36 @@ pub enum IntView {
 	Bool(LinearTransform, BoolView),
 }
 
+impl IntVarDef {
+	/// Create a new integer variable definition with the given domain.
+	pub(crate) fn with_domain(dom: IntSetVal) -> Self {
+		Self {
+			domain: dom,
+			constraints: Vec::new(),
+		}
+	}
+}
+
+impl IntView {
+	/// Get the [`view::IntView`] to which the `IntView` will be mapped.
+	pub(crate) fn to_arg<Oracle: PropagatingSolver<Engine>>(
+		&self,
+		slv: &mut Solver<Oracle>,
+		map: &mut VariableMap,
+	) -> view::IntView {
+		map.get_int(slv, self)
+	}
+}
+
 impl Add<IntVal> for IntView {
 	type Output = Self;
+
 	fn add(self, rhs: IntVal) -> Self::Output {
 		match self {
 			Self::Var(x) => Self::Linear(LinearTransform::offset(rhs), x),
 			Self::Const(v) => Self::Const(v + rhs),
 			Self::Linear(t, x) => Self::Linear(t + rhs, x),
 			Self::Bool(t, x) => Self::Bool(t + rhs, x),
-		}
-	}
-}
-
-impl Mul<NonZeroIntVal> for IntView {
-	type Output = Self;
-	fn mul(self, rhs: NonZeroIntVal) -> Self::Output {
-		match self {
-			Self::Var(x) => Self::Linear(LinearTransform::scaled(rhs), x),
-			Self::Const(v) => Self::Const(v * rhs.get()),
-			Self::Linear(t, x) => Self::Linear(t * rhs, x),
-			Self::Bool(t, x) => Self::Bool(t * rhs, x),
-		}
-	}
-}
-
-impl Mul<IntVal> for IntView {
-	type Output = Self;
-	fn mul(self, rhs: IntVal) -> Self::Output {
-		if rhs == 0 {
-			Self::Const(0)
-		} else {
-			self.mul(NonZeroIntVal::new(rhs).unwrap())
-		}
-	}
-}
-
-impl Neg for IntView {
-	type Output = Self;
-	fn neg(self) -> Self::Output {
-		match self {
-			Self::Var(x) => {
-				Self::Linear(LinearTransform::scaled(NonZeroIntVal::new(-1).unwrap()), x)
-			}
-			Self::Const(v) => Self::Const(-v),
-			Self::Linear(t, x) => Self::Linear(-t, x),
-			Self::Bool(t, x) => Self::Bool(-t, x),
 		}
 	}
 }
@@ -120,13 +84,53 @@ impl From<BoolView> for IntView {
 	}
 }
 
+impl Mul<IntVal> for IntView {
+	type Output = Self;
+
+	fn mul(self, rhs: IntVal) -> Self::Output {
+		if rhs == 0 {
+			Self::Const(0)
+		} else {
+			self.mul(NonZeroIntVal::new(rhs).unwrap())
+		}
+	}
+}
+
+impl Mul<NonZeroIntVal> for IntView {
+	type Output = Self;
+
+	fn mul(self, rhs: NonZeroIntVal) -> Self::Output {
+		match self {
+			Self::Var(x) => Self::Linear(LinearTransform::scaled(rhs), x),
+			Self::Const(v) => Self::Const(v * rhs.get()),
+			Self::Linear(t, x) => Self::Linear(t * rhs, x),
+			Self::Bool(t, x) => Self::Bool(t * rhs, x),
+		}
+	}
+}
+
+impl Neg for IntView {
+	type Output = Self;
+
+	fn neg(self) -> Self::Output {
+		match self {
+			Self::Var(x) => {
+				Self::Linear(LinearTransform::scaled(NonZeroIntVal::new(-1).unwrap()), x)
+			}
+			Self::Const(v) => Self::Const(-v),
+			Self::Linear(t, x) => Self::Linear(-t, x),
+			Self::Bool(t, x) => Self::Bool(-t, x),
+		}
+	}
+}
+
 impl Model {
 	/// Ensure that a given integer view cannot take any of the values in the
 	/// given set.
 	pub(crate) fn diff_int_domain(
 		&mut self,
 		iv: &IntView,
-		mask: &RangeList<IntVal>,
+		mask: &IntSetVal,
 		con: usize,
 	) -> Result<(), ReformulationError> {
 		match iv {
@@ -154,11 +158,11 @@ impl Model {
 				}
 			}
 			IntView::Linear(trans, iv) => {
-				let mask = trans.rev_transform_mask(mask);
+				let mask = trans.rev_transform_int_set(mask);
 				self.diff_int_domain(&IntView::Var(*iv), &mask, con)
 			}
 			IntView::Bool(trans, b) => {
-				let mask = trans.rev_transform_mask(mask);
+				let mask = trans.rev_transform_int_set(mask);
 				if mask.contains(&0) {
 					self.set_bool(b, con)?;
 				}
@@ -227,7 +231,7 @@ impl Model {
 	pub(crate) fn intersect_int_domain(
 		&mut self,
 		iv: &IntView,
-		mask: &RangeList<IntVal>,
+		mask: &IntSetVal,
 		con: usize,
 	) -> Result<(), ReformulationError> {
 		match iv {
@@ -255,11 +259,11 @@ impl Model {
 				}
 			}
 			IntView::Linear(trans, iv) => {
-				let mask = trans.rev_transform_mask(mask);
+				let mask = trans.rev_transform_int_set(mask);
 				self.intersect_int_domain(&IntView::Var(*iv), &mask, con)
 			}
 			IntView::Bool(trans, b) => {
-				let mask = trans.rev_transform_mask(mask);
+				let mask = trans.rev_transform_int_set(mask);
 				if !mask.contains(&0) {
 					self.set_bool(b, con)?;
 				}

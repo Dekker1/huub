@@ -75,6 +75,26 @@ pub(crate) enum IntPropCond {
 }
 
 impl ActivationList {
+	/// Get an iterator over the list of propagators to be enqueued.
+	pub(crate) fn activated_by(&self, event: IntEvent) -> impl Iterator<Item = PropRef> + '_ {
+		let r1 = if event == IntEvent::LowerBound {
+			self.lower_bound_idx as usize..self.upper_bound_idx as usize
+		} else {
+			0..0
+		};
+		let r2 = match event {
+			IntEvent::Fixed => 0..,
+			// NOTE: Bounds (Event) should trigger both LowerBound and UpperBound conditions
+			IntEvent::Bounds => self.lower_bound_idx as usize..,
+			IntEvent::UpperBound => self.upper_bound_idx as usize..,
+			IntEvent::LowerBound => self.bounds_idx as usize..,
+			IntEvent::Domain => self.domain_idx as usize..,
+		};
+		self.activations[r1]
+			.iter()
+			.copied()
+			.chain(self.activations[r2].iter().copied())
+	}
 	/// Add a propagator to the list of propagators to be enqueued based on the
 	/// given condition.
 	pub(crate) fn add(&mut self, mut prop: PropRef, condition: IntPropCond) {
@@ -132,27 +152,6 @@ impl ActivationList {
 			}
 			IntPropCond::Domain => self.activations.push(prop),
 		};
-	}
-
-	/// Get an iterator over the list of propagators to be enqueued.
-	pub(crate) fn activated_by(&self, event: IntEvent) -> impl Iterator<Item = PropRef> + '_ {
-		let r1 = if event == IntEvent::LowerBound {
-			self.lower_bound_idx as usize..self.upper_bound_idx as usize
-		} else {
-			0..0
-		};
-		let r2 = match event {
-			IntEvent::Fixed => 0..,
-			// NOTE: Bounds (Event) should trigger both LowerBound and UpperBound conditions
-			IntEvent::Bounds => self.lower_bound_idx as usize..,
-			IntEvent::UpperBound => self.upper_bound_idx as usize..,
-			IntEvent::LowerBound => self.bounds_idx as usize..,
-			IntEvent::Domain => self.domain_idx as usize..,
-		};
-		self.activations[r1]
-			.iter()
-			.copied()
-			.chain(self.activations[r2].iter().copied())
 	}
 }
 

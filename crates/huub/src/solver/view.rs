@@ -1,6 +1,7 @@
 //! The view module contains the types that are used to reference values in the
 //! solver that can be expected as part of a solution, and are used internally
 //! in branchers and propagators.
+
 use std::{
 	num::NonZeroI32,
 	ops::{Add, Mul, Neg, Not},
@@ -21,50 +22,9 @@ use crate::{
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-/// A reference to a value in the solver that can be expected as part of a
-/// solution.
-pub enum SolverView {
-	/// A Boolean type value.
-	Bool(BoolView),
-	/// An integer type value.
-	Int(IntView),
-}
-
-impl From<BoolView> for SolverView {
-	fn from(value: BoolView) -> Self {
-		Self::Bool(value)
-	}
-}
-impl From<&BoolView> for SolverView {
-	fn from(value: &BoolView) -> Self {
-		Self::Bool(*value)
-	}
-}
-impl From<IntView> for SolverView {
-	fn from(value: IntView) -> Self {
-		Self::Int(value)
-	}
-}
-impl From<&IntView> for SolverView {
-	fn from(value: &IntView) -> Self {
-		Self::Int(*value)
-	}
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 /// A reference to a Boolean type value in the solver that can be expected as
 /// part of a solution.
 pub struct BoolView(pub(crate) BoolViewInner);
-
-impl BoolView {
-	/// Return an integers that can used to identify the literal, if there is one.
-	pub fn reverse_map_info(&self) -> Option<NonZeroI32> {
-		match self.0 {
-			BoolViewInner::Lit(v) => Some(v.into()),
-			BoolViewInner::Const(_) => None,
-		}
-	}
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[allow(variant_size_differences, reason = "`Lit` cannot be as smal as `bool`")]
@@ -76,6 +36,64 @@ pub(crate) enum BoolViewInner {
 	Lit(RawLit),
 	/// A constant boolean value.
 	Const(bool),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// A reference to a integer type value in the solver that can be expected as
+/// part of a solution.
+pub struct IntView(pub(crate) IntViewInner);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// The internal representation of [`IntView`].
+///
+/// Note that this representation is not meant to be exposed to the user.
+pub(crate) enum IntViewInner {
+	/// (Raw) Integer Variable
+	/// Reference to location in the Engine's State
+	VarRef(IntVarRef),
+	/// Constant Integer Value
+	Const(IntVal),
+	/// Linear View of an Integer Variable
+	Linear {
+		/// Linear transformation on the integer value of the variable.
+		transformer: LinearTransform,
+		/// Reference to an integer variable.
+		var: IntVarRef,
+	},
+	/// Linear View of an Boolean Literal.
+	Bool {
+		/// Linear transformation on the integer value of the Boolean literal.
+		transformer: LinearTransform,
+		/// The Boolean literal that is being treated as an integer (`false` -> `0`
+		/// and `true` -> `1`).
+		lit: RawLit,
+	},
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// A reference to a value in the solver that can be expected as part of a
+/// solution.
+pub enum SolverView {
+	/// A Boolean type value.
+	Bool(BoolView),
+	/// An integer type value.
+	Int(IntView),
+}
+
+impl BoolView {
+	/// Return an integers that can used to identify the literal, if there is one.
+	pub fn reverse_map_info(&self) -> Option<NonZeroI32> {
+		match self.0 {
+			BoolViewInner::Lit(v) => Some(v.into()),
+			BoolViewInner::Const(_) => None,
+		}
+	}
+}
+
+impl From<bool> for BoolView {
+	fn from(value: bool) -> Self {
+		BoolView(BoolViewInner::Const(value))
+	}
 }
 
 impl Not for BoolView {
@@ -99,18 +117,18 @@ impl Not for &BoolView {
 	}
 }
 
-impl From<bool> for BoolView {
-	fn from(value: bool) -> Self {
-		BoolView(BoolViewInner::Const(value))
-	}
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-/// A reference to a integer type value in the solver that can be expected as
-/// part of a solution.
-pub struct IntView(pub(crate) IntViewInner);
-
 impl IntView {
+	/// Returns an integer that can be used to identify the associated integer
+	/// decision variable and whether the int view is a view on another decision
+	/// variable.
+	pub fn int_reverse_map_info(&self) -> (Option<usize>, bool) {
+		match self.0 {
+			IntViewInner::VarRef(v) => (Some(v.into()), false),
+			IntViewInner::Bool { .. } => (None, true),
+			IntViewInner::Linear { var, .. } => (Some(var.into()), true),
+			_ => (None, true),
+		}
+	}
 	/// Return a list of integers that can used to identify the literals that are
 	/// associated to an integer view, and the meaning of those literals.
 	pub fn lit_reverse_map_info<Oracle: PropagatingSolver<Engine>>(
@@ -163,90 +181,11 @@ impl IntView {
 			_ => Vec::new(),
 		}
 	}
-
-	/// Returns an integer that can be used to identify the associated integer
-	/// decision variable and whether the int view is a view on another decision
-	/// variable.
-	pub fn int_reverse_map_info(&self) -> (Option<usize>, bool) {
-		match self.0 {
-			IntViewInner::VarRef(v) => (Some(v.into()), false),
-			IntViewInner::Bool { .. } => (None, true),
-			IntViewInner::Linear { var, .. } => (Some(var.into()), true),
-			_ => (None, true),
-		}
-	}
-}
-
-impl From<IntVal> for IntView {
-	fn from(value: IntVal) -> Self {
-		Self(IntViewInner::Const(value))
-	}
-}
-impl From<BoolView> for IntView {
-	fn from(value: BoolView) -> Self {
-		Self(match value.0 {
-			BoolViewInner::Lit(l) => IntViewInner::Bool {
-				transformer: LinearTransform::offset(0),
-				lit: l,
-			},
-			BoolViewInner::Const(c) => IntViewInner::Const(c as IntVal),
-		})
-	}
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-/// The internal representation of [`IntView`].
-///
-/// Note that this representation is not meant to be exposed to the user.
-pub(crate) enum IntViewInner {
-	/// (Raw) Integer Variable
-	/// Reference to location in the Engine's State
-	VarRef(IntVarRef),
-	/// Constant Integer Value
-	Const(IntVal),
-	/// Linear View of an Integer Variable
-	Linear {
-		/// Linear transformation on the integer value of the variable.
-		transformer: LinearTransform,
-		/// Reference to an integer variable.
-		var: IntVarRef,
-	},
-	/// Linear View of an Boolean Literal.
-	Bool {
-		/// Linear transformation on the integer value of the Boolean literal.
-		transformer: LinearTransform,
-		/// The Boolean literal that is being treated as an integer (`false` -> `0`
-		/// and `true` -> `1`).
-		lit: RawLit,
-	},
-}
-
-impl Neg for IntView {
-	type Output = Self;
-	fn neg(self) -> Self::Output {
-		Self(match self.0 {
-			IntViewInner::VarRef(var) => IntViewInner::Linear {
-				transformer: LinearTransform::scaled(NonZeroIntVal::new(-1).unwrap()),
-				var,
-			},
-			IntViewInner::Const(i) => IntViewInner::Const(-i),
-			IntViewInner::Linear {
-				transformer: transform,
-				var,
-			} => IntViewInner::Linear {
-				transformer: -transform,
-				var,
-			},
-			IntViewInner::Bool { transformer, lit } => IntViewInner::Bool {
-				transformer: -transformer,
-				lit,
-			},
-		})
-	}
 }
 
 impl Add<IntVal> for IntView {
 	type Output = Self;
+
 	fn add(self, rhs: IntVal) -> Self::Output {
 		Self(match self.0 {
 			IntViewInner::VarRef(var) => IntViewInner::Linear {
@@ -266,6 +205,23 @@ impl Add<IntVal> for IntView {
 				lit,
 			},
 		})
+	}
+}
+impl From<BoolView> for IntView {
+	fn from(value: BoolView) -> Self {
+		Self(match value.0 {
+			BoolViewInner::Lit(l) => IntViewInner::Bool {
+				transformer: LinearTransform::offset(0),
+				lit: l,
+			},
+			BoolViewInner::Const(c) => IntViewInner::Const(c as IntVal),
+		})
+	}
+}
+
+impl From<IntVal> for IntView {
+	fn from(value: IntVal) -> Self {
+		Self(IntViewInner::Const(value))
 	}
 }
 
@@ -288,5 +244,51 @@ impl Mul<NonZeroIntVal> for IntView {
 				lit,
 			},
 		})
+	}
+}
+
+impl Neg for IntView {
+	type Output = Self;
+
+	fn neg(self) -> Self::Output {
+		Self(match self.0 {
+			IntViewInner::VarRef(var) => IntViewInner::Linear {
+				transformer: LinearTransform::scaled(NonZeroIntVal::new(-1).unwrap()),
+				var,
+			},
+			IntViewInner::Const(i) => IntViewInner::Const(-i),
+			IntViewInner::Linear {
+				transformer: transform,
+				var,
+			} => IntViewInner::Linear {
+				transformer: -transform,
+				var,
+			},
+			IntViewInner::Bool { transformer, lit } => IntViewInner::Bool {
+				transformer: -transformer,
+				lit,
+			},
+		})
+	}
+}
+impl From<&BoolView> for SolverView {
+	fn from(value: &BoolView) -> Self {
+		Self::Bool(*value)
+	}
+}
+impl From<&IntView> for SolverView {
+	fn from(value: &IntView) -> Self {
+		Self::Int(*value)
+	}
+}
+
+impl From<BoolView> for SolverView {
+	fn from(value: BoolView) -> Self {
+		Self::Bool(value)
+	}
+}
+impl From<IntView> for SolverView {
+	fn from(value: IntView) -> Self {
+		Self::Int(value)
 	}
 }

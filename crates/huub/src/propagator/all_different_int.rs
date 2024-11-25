@@ -3,7 +3,7 @@
 
 use crate::{
 	actions::{ExplanationActions, InitializationActions},
-	propagator::{conflict::Conflict, PropagationActions, Propagator},
+	propagator::{Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, int_var::LitMeaning, queue::PriorityLevel},
 		poster::{BoxedPropagator, Poster, QueuePreferences},
@@ -16,6 +16,12 @@ use crate::{
 /// Value consistent propagator for the `all_different_int` constraint.
 pub(crate) struct AllDifferentIntValue {
 	/// List of integer variables that must take different values.
+	vars: Vec<IntView>,
+}
+
+/// [`Poster`] for [`AllDifferentIntValue`].
+struct AllDifferentIntValuePoster {
+	/// The list of variables that must take different values.
 	vars: Vec<IntView>,
 }
 
@@ -48,12 +54,6 @@ where
 		}
 		Ok(())
 	}
-}
-
-/// [`Poster`] for [`AllDifferentIntValue`].
-struct AllDifferentIntValuePoster {
-	/// The list of variables that must take different values.
-	vars: Vec<IntView>,
 }
 
 impl Poster for AllDifferentIntValuePoster {

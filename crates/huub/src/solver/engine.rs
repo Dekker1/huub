@@ -1,5 +1,23 @@
 //! Module containing the main propagation engine of the solver.
 
+/// Macro to output a trace message when a new literal is registered.
+macro_rules! trace_new_lit {
+	($iv:expr, $def:expr, $lit:expr) => {
+		tracing::debug!(
+			lit = i32::from($lit),
+			int_var = usize::from($iv),
+			is_eq = matches!($def.meaning, LitMeaning::Eq(_)),
+			val = match $def.meaning {
+				LitMeaning::Eq(val) => val,
+				LitMeaning::Less(val) => val,
+				_ => unreachable!(),
+			},
+			"register new literal"
+		);
+		tracing::trace!(lit = i32::from($lit), "lazy literal")
+	};
+}
+
 pub(crate) mod activation_list;
 pub(crate) mod bool_to_int;
 pub(crate) mod int_var;
@@ -20,12 +38,13 @@ use pindakaas::{
 	},
 	Lit as RawLit, Var as RawVar,
 };
+pub(crate) use trace_new_lit;
 use tracing::{debug, trace};
 
 use crate::{
 	actions::{DecisionActions, ExplanationActions, InspectionActions, TrailingActions},
 	brancher::Decision,
-	propagator::reason::Reason,
+	propagator::Reason,
 	solver::{
 		engine::{
 			activation_list::{ActivationList, IntEvent},
@@ -42,25 +61,6 @@ use crate::{
 	BoolView, Clause, Conjunction, IntVal, IntView,
 };
 
-/// Macro to output a trace message when a new literal is registered.
-macro_rules! trace_new_lit {
-	($iv:expr, $def:expr, $lit:expr) => {
-		tracing::debug!(
-			lit = i32::from($lit),
-			int_var = usize::from($iv),
-			is_eq = matches!($def.meaning, LitMeaning::Eq(_)),
-			val = match $def.meaning {
-				LitMeaning::Eq(val) => val,
-				LitMeaning::Less(val) => val,
-				_ => unreachable!(),
-			},
-			"register new literal"
-		);
-		tracing::trace!(lit = i32::from($lit), "lazy literal")
-	};
-}
-pub(crate) use trace_new_lit;
-
 #[derive(Debug, Default, Clone)]
 /// A propagation engine implementing the [`Propagator`] trait.
 pub struct Engine {
@@ -70,11 +70,6 @@ pub struct Engine {
 	pub(crate) branchers: Vec<BoxedBrancher>,
 	/// Internal State representation of the propagation engine.
 	pub(crate) state: State,
-}
-
-index_vec::define_index_type! {
-	/// Identifies an propagator in a [`Solver`]
-	pub struct PropRef = u32;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -135,129 +130,22 @@ pub(crate) struct State {
 }
 
 impl PropagatorExtension for Engine {
-	fn reason_persistence(&self) -> ClausePersistence {
-		ClausePersistence::Forgettable
-	}
-
-	fn notify_assignments(&mut self, lits: &[RawLit]) {
-		debug!(lits = ?lits.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "assignments");
-		for &lit in lits {
-			// Process Boolean assignment
-			if self.state.trail.assign_lit(lit).is_some() {
-				continue;
-			}
-			// Enqueue propagators, if no conflict has been found
-			if self.state.conflict.is_none() {
-				self.state.enqueue_propagators(lit, None);
-			}
-		}
-	}
-
-	fn notify_new_decision_level(&mut self) {
-		debug_assert!(self.state.conflict.is_none());
-		trace!("new decision level");
-		self.state.notify_new_decision_level();
-	}
-
-	fn notify_backtrack(&mut self, new_level: usize, restart: bool) {
-		debug!(new_level, restart, "backtrack");
-		// Revert value changes to previous decision level
-		self.state.notify_backtrack::<false>(new_level, restart);
-	}
-
-	fn decide(&mut self, slv: &mut dyn SolvingActions) -> SearchDecision {
-		if !self.state.vsids {
-			let mut current = self.state.trail.get_trailed_int(Trail::CURRENT_BRANCHER) as usize;
-			if current == self.branchers.len() {
-				self.state.statistics.oracle_decisions += 1;
-				return SearchDecision::Free;
-			}
-			let mut ctx = SolvingContext::new(slv, &mut self.state);
-			while current < self.branchers.len() {
-				match self.branchers[current].decide(&mut ctx) {
-					Decision::Select(lit) => {
-						debug!(lit = i32::from(lit), "decide");
-						self.state.statistics.user_decisions += 1;
-						return SearchDecision::Assign(lit);
-					}
-					Decision::Exhausted => {
-						current += 1;
-						let _ = ctx.set_trailed_int(Trail::CURRENT_BRANCHER, current as i64);
-					}
-					Decision::Consumed => {
-						// Remove the brancher
-						//
-						// Note that this shifts all subsequent branchers (so we don't need to
-						// increment current), but has bad complexity. However, due to the low
-						// number of branchers, this is (likely) acceptable.
-						let _ = self.branchers.remove(current);
-					}
-				}
-			}
-		}
-		self.state.statistics.oracle_decisions += 1;
-		SearchDecision::Free
-	}
-
-	#[tracing::instrument(level = "debug", skip(self, slv), fields(level = self.state.decision_level()))]
-	fn propagate(&mut self, slv: &mut dyn SolvingActions) -> Vec<RawLit> {
-		// Check whether there are previous clauses to be communicated
+	fn add_external_clause(
+		&mut self,
+		_slv: &mut dyn SolvingActions,
+	) -> Option<(Clause, ClausePersistence)> {
 		if !self.state.clauses.is_empty() {
-			return Vec::new();
+			let clause = self.state.clauses.pop_front(); // Known to be `Some`
+			trace!(clause = ?clause.as_ref().unwrap().iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "add external clause");
+			clause.map(|c| (c, ClausePersistence::Irreduntant))
+		} else if !self.state.propagation_queue.is_empty() {
+			None // Require that the solver first applies the remaining propagation
+		} else if let Some(conflict) = self.state.conflict.clone() {
+			debug!(clause = ?conflict.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "add conflict clause");
+			Some((conflict, ClausePersistence::Forgettable))
+		} else {
+			None
 		}
-		if self.state.propagation_queue.is_empty() && self.state.conflict.is_none() {
-			// If there are no previous changes, run propagators
-			SolvingContext::new(slv, &mut self.state).run_propagators(&mut self.propagators);
-		}
-		// Check whether there are new clauses that need to be communicated first
-		if !self.state.clauses.is_empty() {
-			return Vec::new();
-		}
-		let queue = mem::take(&mut self.state.propagation_queue);
-		if queue.is_empty() {
-			return Vec::new(); // Early return to avoid tracing statements
-		}
-		debug!(
-			lits = ?queue
-				.iter()
-				.map(|&x| i32::from(x))
-				.collect::<Vec<i32>>(),
-			"propagate"
-		);
-		// Debug helper to ensure that any reason is based on known true literals
-		#[cfg(debug_assertions)]
-		{
-			let mut prev = None;
-			for &lit in queue.iter() {
-				// Notify of the assignment of the previous literal so it is available
-				// when checking the reason.
-				if let Some(prev) = prev {
-					self.notify_assignments(&[prev]);
-				}
-				if let Some(reason) = self.state.reason_map.get(&lit).cloned() {
-					let clause: Clause =
-						reason.explain(&mut self.propagators, &mut self.state, Some(lit));
-					for l in &clause {
-						if l == &lit {
-							continue;
-						}
-						let val = self.state.trail.get_sat_value(!l);
-						if !val.unwrap_or(false) {
-							tracing::error!(lit_prop = i32::from(lit), lit_reason= i32::from(!l), reason_val = ?val, "invalid reason");
-						}
-						debug_assert!(
-							val.unwrap_or(false),
-							"Literal {} in Reason for {} is {:?}, but should be known true",
-							!l,
-							lit,
-							val
-						);
-					}
-				}
-				prev = Some(lit);
-			}
-		}
-		queue
 	}
 
 	fn add_reason_clause(&mut self, propagated_lit: RawLit) -> Clause {
@@ -346,22 +234,128 @@ impl PropagatorExtension for Engine {
 		accept
 	}
 
-	fn add_external_clause(
-		&mut self,
-		_slv: &mut dyn SolvingActions,
-	) -> Option<(Clause, ClausePersistence)> {
-		if !self.state.clauses.is_empty() {
-			let clause = self.state.clauses.pop_front(); // Known to be `Some`
-			trace!(clause = ?clause.as_ref().unwrap().iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "add external clause");
-			clause.map(|c| (c, ClausePersistence::Irreduntant))
-		} else if !self.state.propagation_queue.is_empty() {
-			None // Require that the solver first applies the remaining propagation
-		} else if let Some(conflict) = self.state.conflict.clone() {
-			debug!(clause = ?conflict.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "add conflict clause");
-			Some((conflict, ClausePersistence::Forgettable))
-		} else {
-			None
+	fn decide(&mut self, slv: &mut dyn SolvingActions) -> SearchDecision {
+		if !self.state.vsids {
+			let mut current = self.state.trail.get_trailed_int(Trail::CURRENT_BRANCHER) as usize;
+			if current == self.branchers.len() {
+				self.state.statistics.oracle_decisions += 1;
+				return SearchDecision::Free;
+			}
+			let mut ctx = SolvingContext::new(slv, &mut self.state);
+			while current < self.branchers.len() {
+				match self.branchers[current].decide(&mut ctx) {
+					Decision::Select(lit) => {
+						debug!(lit = i32::from(lit), "decide");
+						self.state.statistics.user_decisions += 1;
+						return SearchDecision::Assign(lit);
+					}
+					Decision::Exhausted => {
+						current += 1;
+						let _ = ctx.set_trailed_int(Trail::CURRENT_BRANCHER, current as i64);
+					}
+					Decision::Consumed => {
+						// Remove the brancher
+						//
+						// Note that this shifts all subsequent branchers (so we don't need to
+						// increment current), but has bad complexity. However, due to the low
+						// number of branchers, this is (likely) acceptable.
+						let _ = self.branchers.remove(current);
+					}
+				}
+			}
 		}
+		self.state.statistics.oracle_decisions += 1;
+		SearchDecision::Free
+	}
+
+	fn notify_assignments(&mut self, lits: &[RawLit]) {
+		debug!(lits = ?lits.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "assignments");
+		for &lit in lits {
+			// Process Boolean assignment
+			if self.state.trail.assign_lit(lit).is_some() {
+				continue;
+			}
+			// Enqueue propagators, if no conflict has been found
+			if self.state.conflict.is_none() {
+				self.state.enqueue_propagators(lit, None);
+			}
+		}
+	}
+
+	fn notify_backtrack(&mut self, new_level: usize, restart: bool) {
+		debug!(new_level, restart, "backtrack");
+		// Revert value changes to previous decision level
+		self.state.notify_backtrack::<false>(new_level, restart);
+	}
+
+	fn notify_new_decision_level(&mut self) {
+		debug_assert!(self.state.conflict.is_none());
+		trace!("new decision level");
+		self.state.notify_new_decision_level();
+	}
+
+	#[tracing::instrument(level = "debug", skip(self, slv), fields(level = self.state.decision_level()))]
+	fn propagate(&mut self, slv: &mut dyn SolvingActions) -> Vec<RawLit> {
+		// Check whether there are previous clauses to be communicated
+		if !self.state.clauses.is_empty() {
+			return Vec::new();
+		}
+		if self.state.propagation_queue.is_empty() && self.state.conflict.is_none() {
+			// If there are no previous changes, run propagators
+			SolvingContext::new(slv, &mut self.state).run_propagators(&mut self.propagators);
+		}
+		// Check whether there are new clauses that need to be communicated first
+		if !self.state.clauses.is_empty() {
+			return Vec::new();
+		}
+		let queue = mem::take(&mut self.state.propagation_queue);
+		if queue.is_empty() {
+			return Vec::new(); // Early return to avoid tracing statements
+		}
+		debug!(
+			lits = ?queue
+				.iter()
+				.map(|&x| i32::from(x))
+				.collect::<Vec<i32>>(),
+			"propagate"
+		);
+		// Debug helper to ensure that any reason is based on known true literals
+		#[cfg(debug_assertions)]
+		{
+			let mut prev = None;
+			for &lit in queue.iter() {
+				// Notify of the assignment of the previous literal so it is available
+				// when checking the reason.
+				if let Some(prev) = prev {
+					self.notify_assignments(&[prev]);
+				}
+				if let Some(reason) = self.state.reason_map.get(&lit).cloned() {
+					let clause: Clause =
+						reason.explain(&mut self.propagators, &mut self.state, Some(lit));
+					for l in &clause {
+						if l == &lit {
+							continue;
+						}
+						let val = self.state.trail.get_sat_value(!l);
+						if !val.unwrap_or(false) {
+							tracing::error!(lit_prop = i32::from(lit), lit_reason= i32::from(!l), reason_val = ?val, "invalid reason");
+						}
+						debug_assert!(
+							val.unwrap_or(false),
+							"Literal {} in Reason for {} is {:?}, but should be known true",
+							!l,
+							lit,
+							val
+						);
+					}
+				}
+				prev = Some(lit);
+			}
+		}
+		queue
+	}
+	fn reason_persistence(&self) -> ClausePersistence {
+		ClausePersistence::Forgettable
 	}
 }
 
@@ -370,13 +364,13 @@ impl SearchStatistics {
 	pub fn conflicts(&self) -> u64 {
 		self.conflicts
 	}
-	/// Returns the peak depth of the search tree.
-	pub fn peak_depth(&self) -> u32 {
-		self.peak_depth
-	}
 	/// Return the number of search decisions that was left to the oracle solver.
 	pub fn oracle_decisions(&self) -> u64 {
 		self.oracle_decisions
+	}
+	/// Returns the peak depth of the search tree.
+	pub fn peak_depth(&self) -> u32 {
+		self.peak_depth
 	}
 	/// Returns the number of propagations performed by the constraint programming
 	/// engine during the search.
@@ -395,6 +389,10 @@ impl SearchStatistics {
 }
 
 impl State {
+	/// Returns the current decision level of the solver.
+	fn decision_level(&self) -> u32 {
+		self.trail.decision_level()
+	}
 	/// Determine whether assigning a literal triggers an event on an integer variable.
 	///
 	/// Returns `None` if the literal does not trigger an event on an integer
@@ -465,9 +463,38 @@ impl State {
 		}
 	}
 
-	/// Returns the current decision level of the solver.
-	fn decision_level(&self) -> u32 {
-		self.trail.decision_level()
+	/// Enqueue all propagators that are activated because the [`IntEvent`]
+	/// `event` has happened to `int_var`.
+	fn enqueue_int_propagators(
+		&mut self,
+		int_var: IntVarRef,
+		event: IntEvent,
+		skip: Option<PropRef>,
+	) {
+		for prop in self.int_activation[int_var].activated_by(event) {
+			if Some(prop) != skip && !self.enqueued[prop] {
+				self.propagator_queue
+					.insert(self.propagator_priority[prop], prop);
+				self.enqueued[prop] = true;
+			}
+		}
+	}
+
+	/// Enqueue all propagators that are activated because `lit` has been
+	/// assigned.
+	fn enqueue_propagators(&mut self, lit: RawLit, skip: Option<PropRef>) {
+		for &prop in self.bool_activation.get(&lit.var()).into_iter().flatten() {
+			if Some(prop) != skip && !self.enqueued[prop] {
+				self.propagator_queue
+					.insert(self.propagator_priority[prop], prop);
+				self.enqueued[prop] = true;
+			}
+		}
+
+		// Process Integer consequences
+		if let Some((iv, event)) = self.determine_int_event(lit) {
+			self.enqueue_int_propagators(iv, event, skip);
+		}
 	}
 
 	#[inline]
@@ -484,17 +511,6 @@ impl State {
 				vec![lit]
 			};
 			self.clauses.push_back(clause);
-		}
-	}
-
-	/// Internal method called to trigger a new decision level.
-	fn notify_new_decision_level(&mut self) {
-		self.trail.notify_new_decision_level();
-
-		// Update peak decision level
-		let new_level = self.decision_level();
-		if new_level > self.statistics.peak_depth {
-			self.statistics.peak_depth = new_level;
 		}
 	}
 
@@ -560,37 +576,14 @@ impl State {
 		}
 	}
 
-	/// Enqueue all propagators that are activated because the [`IntEvent`]
-	/// `event` has happened to `int_var`.
-	fn enqueue_int_propagators(
-		&mut self,
-		int_var: IntVarRef,
-		event: IntEvent,
-		skip: Option<PropRef>,
-	) {
-		for prop in self.int_activation[int_var].activated_by(event) {
-			if Some(prop) != skip && !self.enqueued[prop] {
-				self.propagator_queue
-					.insert(self.propagator_priority[prop], prop);
-				self.enqueued[prop] = true;
-			}
-		}
-	}
+	/// Internal method called to trigger a new decision level.
+	fn notify_new_decision_level(&mut self) {
+		self.trail.notify_new_decision_level();
 
-	/// Enqueue all propagators that are activated because `lit` has been
-	/// assigned.
-	fn enqueue_propagators(&mut self, lit: RawLit, skip: Option<PropRef>) {
-		for &prop in self.bool_activation.get(&lit.var()).into_iter().flatten() {
-			if Some(prop) != skip && !self.enqueued[prop] {
-				self.propagator_queue
-					.insert(self.propagator_priority[prop], prop);
-				self.enqueued[prop] = true;
-			}
-		}
-
-		// Process Integer consequences
-		if let Some((iv, event)) = self.determine_int_event(lit) {
-			self.enqueue_int_propagators(iv, event, skip);
+		// Update peak decision level
+		let new_level = self.decision_level();
+		if new_level > self.statistics.peak_depth {
+			self.statistics.peak_depth = new_level;
 		}
 	}
 
@@ -609,18 +602,18 @@ impl State {
 		}
 	}
 
-	/// Set the number of conflicts after which the solver should switch to using
-	/// VSIDS to make search decisions.
-	pub(crate) fn set_vsids_after(&mut self, conflicts: Option<u32>) {
-		self.config.vsids_after = conflicts;
-	}
-
 	/// Set whether the solver should toggle between VSIDS and a user defined
 	/// search strategy after every restart.
 	///
 	/// Note that this setting is ignored if the solver is set to use VSIDS only.
 	pub(crate) fn set_toggle_vsids(&mut self, enabled: bool) {
 		self.config.toggle_vsids = enabled;
+	}
+
+	/// Set the number of conflicts after which the solver should switch to using
+	/// VSIDS to make search decisions.
+	pub(crate) fn set_vsids_after(&mut self, conflicts: Option<u32>) {
+		self.config.vsids_after = conflicts;
 	}
 
 	/// Set wether the solver should make all search decisions based on the VSIDS
@@ -632,47 +625,6 @@ impl State {
 }
 
 impl ExplanationActions for State {
-	fn try_int_lit(&self, var: IntView, mut meaning: LitMeaning) -> Option<BoolView> {
-		if let IntViewInner::Linear { transformer, .. } | IntViewInner::Bool { transformer, .. } =
-			var.0
-		{
-			match transformer.rev_transform_lit(meaning) {
-				Ok(m) => meaning = m,
-				Err(v) => return Some(BoolView(BoolViewInner::Const(v))),
-			}
-		}
-
-		match var.0 {
-			IntViewInner::VarRef(var) | IntViewInner::Linear { var, .. } => {
-				self.int_vars[var].get_bool_lit(meaning)
-			}
-			IntViewInner::Const(c) => Some(BoolView(BoolViewInner::Const(match meaning {
-				LitMeaning::Eq(i) => c == i,
-				LitMeaning::NotEq(i) => c != i,
-				LitMeaning::GreaterEq(i) => c >= i,
-				LitMeaning::Less(i) => c < i,
-			}))),
-			IntViewInner::Bool { lit, .. } => {
-				let (meaning, negated) =
-					if matches!(meaning, LitMeaning::NotEq(_) | LitMeaning::Less(_)) {
-						(!meaning, true)
-					} else {
-						(meaning, false)
-					};
-				let bv = BoolView(match meaning {
-					LitMeaning::Eq(0) => BoolViewInner::Lit(!lit),
-					LitMeaning::Eq(1) => BoolViewInner::Lit(lit),
-					LitMeaning::Eq(_) => BoolViewInner::Const(false),
-					LitMeaning::GreaterEq(1) => BoolViewInner::Lit(lit),
-					LitMeaning::GreaterEq(i) if i > 1 => BoolViewInner::Const(false),
-					LitMeaning::GreaterEq(_) => BoolViewInner::Const(true),
-					_ => unreachable!(),
-				});
-				Some(if negated { !bv } else { bv })
-			}
-		}
-	}
-
 	fn get_int_lit_relaxed(&mut self, var: IntView, meaning: LitMeaning) -> (BoolView, LitMeaning) {
 		debug_assert!(
 			matches!(meaning, LitMeaning::GreaterEq(_) | LitMeaning::Less(_)),
@@ -741,13 +693,6 @@ impl ExplanationActions for State {
 		(bv, meaning)
 	}
 
-	fn get_int_val_lit(&mut self, var: IntView) -> Option<BoolView> {
-		self.get_int_val(var).map(|v| {
-			self.try_int_lit(var, LitMeaning::Eq(v))
-				.expect("value literals cannot be created during explanation")
-		})
-	}
-
 	fn get_int_lower_bound_lit(&mut self, var: IntView) -> BoolView {
 		match var.0 {
 			IntViewInner::VarRef(var) => self.int_vars[var].get_lower_bound_lit(self),
@@ -789,9 +734,95 @@ impl ExplanationActions for State {
 			),
 		}
 	}
+
+	fn get_int_val_lit(&mut self, var: IntView) -> Option<BoolView> {
+		self.get_int_val(var).map(|v| {
+			self.try_int_lit(var, LitMeaning::Eq(v))
+				.expect("value literals cannot be created during explanation")
+		})
+	}
+	fn try_int_lit(&self, var: IntView, mut meaning: LitMeaning) -> Option<BoolView> {
+		if let IntViewInner::Linear { transformer, .. } | IntViewInner::Bool { transformer, .. } =
+			var.0
+		{
+			match transformer.rev_transform_lit(meaning) {
+				Ok(m) => meaning = m,
+				Err(v) => return Some(BoolView(BoolViewInner::Const(v))),
+			}
+		}
+
+		match var.0 {
+			IntViewInner::VarRef(var) | IntViewInner::Linear { var, .. } => {
+				self.int_vars[var].get_bool_lit(meaning)
+			}
+			IntViewInner::Const(c) => Some(BoolView(BoolViewInner::Const(match meaning {
+				LitMeaning::Eq(i) => c == i,
+				LitMeaning::NotEq(i) => c != i,
+				LitMeaning::GreaterEq(i) => c >= i,
+				LitMeaning::Less(i) => c < i,
+			}))),
+			IntViewInner::Bool { lit, .. } => {
+				let (meaning, negated) =
+					if matches!(meaning, LitMeaning::NotEq(_) | LitMeaning::Less(_)) {
+						(!meaning, true)
+					} else {
+						(meaning, false)
+					};
+				let bv = BoolView(match meaning {
+					LitMeaning::Eq(0) => BoolViewInner::Lit(!lit),
+					LitMeaning::Eq(1) => BoolViewInner::Lit(lit),
+					LitMeaning::Eq(_) => BoolViewInner::Const(false),
+					LitMeaning::GreaterEq(1) => BoolViewInner::Lit(lit),
+					LitMeaning::GreaterEq(i) if i > 1 => BoolViewInner::Const(false),
+					LitMeaning::GreaterEq(_) => BoolViewInner::Const(true),
+					_ => unreachable!(),
+				});
+				Some(if negated { !bv } else { bv })
+			}
+		}
+	}
 }
 
 impl InspectionActions for State {
+	fn check_int_in_domain(&self, var: IntView, val: IntVal) -> bool {
+		let (lb, ub) = self.get_int_bounds(var);
+		if lb <= val && val <= ub {
+			let eq_lit = self.try_int_lit(var, LitMeaning::Eq(val));
+			if let Some(eq_lit) = eq_lit {
+				self.get_bool_val(eq_lit).unwrap_or(true)
+			} else {
+				true
+			}
+		} else {
+			false
+		}
+	}
+	fn get_int_bounds(&self, var: IntView) -> (IntVal, IntVal) {
+		match var.0 {
+			IntViewInner::VarRef(iv) => self.int_vars[iv].get_bounds(self),
+			IntViewInner::Const(i) => (i, i),
+			IntViewInner::Linear { transformer, var } => {
+				let (lb, ub) = self.int_vars[var].get_bounds(self);
+				let lb = transformer.transform(lb);
+				let ub = transformer.transform(ub);
+				if lb <= ub {
+					(lb, ub)
+				} else {
+					(ub, lb)
+				}
+			}
+			IntViewInner::Bool { transformer, lit } => {
+				let val = self.trail.get_sat_value(lit).map(Into::into);
+				let lb = transformer.transform(val.unwrap_or(0));
+				let ub = transformer.transform(val.unwrap_or(1));
+				if lb <= ub {
+					(lb, ub)
+				} else {
+					(ub, lb)
+				}
+			}
+		}
+	}
 	fn get_int_lower_bound(&self, var: IntView) -> IntVal {
 		match var.0 {
 			IntViewInner::VarRef(iv) => self.int_vars[iv].get_lower_bound(self),
@@ -842,45 +873,6 @@ impl InspectionActions for State {
 			}
 		}
 	}
-	fn get_int_bounds(&self, var: IntView) -> (IntVal, IntVal) {
-		match var.0 {
-			IntViewInner::VarRef(iv) => self.int_vars[iv].get_bounds(self),
-			IntViewInner::Const(i) => (i, i),
-			IntViewInner::Linear { transformer, var } => {
-				let (lb, ub) = self.int_vars[var].get_bounds(self);
-				let lb = transformer.transform(lb);
-				let ub = transformer.transform(ub);
-				if lb <= ub {
-					(lb, ub)
-				} else {
-					(ub, lb)
-				}
-			}
-			IntViewInner::Bool { transformer, lit } => {
-				let val = self.trail.get_sat_value(lit).map(Into::into);
-				let lb = transformer.transform(val.unwrap_or(0));
-				let ub = transformer.transform(val.unwrap_or(1));
-				if lb <= ub {
-					(lb, ub)
-				} else {
-					(ub, lb)
-				}
-			}
-		}
-	}
-	fn check_int_in_domain(&self, var: IntView, val: IntVal) -> bool {
-		let (lb, ub) = self.get_int_bounds(var);
-		if lb <= val && val <= ub {
-			let eq_lit = self.try_int_lit(var, LitMeaning::Eq(val));
-			if let Some(eq_lit) = eq_lit {
-				self.get_bool_val(eq_lit).unwrap_or(true)
-			} else {
-				true
-			}
-		} else {
-			false
-		}
-	}
 }
 
 impl TrailingActions for State {
@@ -891,4 +883,9 @@ impl TrailingActions for State {
 			fn set_trailed_int(&mut self, x: TrailedInt, v: IntVal) -> IntVal;
 		}
 	}
+}
+
+index_vec::define_index_type! {
+	/// Identifies an propagator in a [`Solver`]
+	pub struct PropRef = u32;
 }

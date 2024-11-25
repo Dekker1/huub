@@ -4,7 +4,7 @@
 
 use crate::{
 	actions::{ExplanationActions, InitializationActions},
-	propagator::{conflict::Conflict, reason::CachedReason, PropagationActions, Propagator},
+	propagator::{CachedReason, Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
 		poster::{BoxedPropagator, Poster, QueuePreferences},
@@ -23,6 +23,39 @@ pub(crate) struct IntPowBounds {
 	result: IntView,
 }
 
+/// [`Poster`] for [`IntPowBounds`].
+struct IntPowBoundsPoster {
+	/// The variable representing the base.
+	base: IntView,
+	/// The variable representing the exponent.
+	exponent: IntView,
+	/// The variable representing the result.
+	result: IntView,
+}
+
+/// Calculate the power of a base to an exponent according to the rules of
+/// integer arithmetic (matching the MiniZinc semantics).
+fn pow(base: IntVal, exponent: IntVal) -> Option<IntVal> {
+	Some(match exponent {
+		0 => 1,
+		1 => base,
+		exp if exp < 0 => match base {
+			0 => return None,
+			1 => 1,
+			-1 if exp % 2 == 0 => 1,
+			-1 => -1,
+			_ => 0,
+		},
+		_ => {
+			let mut result = 1;
+			for _ in 0..exponent {
+				result *= base;
+			}
+			result
+		}
+	})
+}
+
 impl IntPowBounds {
 	/// Prepare a new [`IntPowBounds`] propagator to be posted to the solver.
 	pub(crate) fn prepare(base: IntView, exponent: IntView, result: IntView) -> impl Poster {
@@ -31,86 +64,6 @@ impl IntPowBounds {
 			exponent,
 			result,
 		}
-	}
-
-	/// Propagate the bounds of result variale based on the bounds of base and
-	/// exponent variables.
-	fn propagate_result<P: PropagationActions>(&mut self, actions: &mut P) -> Result<(), Conflict> {
-		let (base_lb, base_ub) = actions.get_int_bounds(self.base);
-		let (exp_lb, exp_ub) = actions.get_int_bounds(self.exponent);
-		let exp_largest_even = if exp_ub % 2 == 0 || exp_lb == exp_ub {
-			exp_ub
-		} else {
-			exp_ub - 1
-		};
-		let exp_smallest_even = if exp_lb % 2 == 0 || exp_lb == exp_ub {
-			exp_lb
-		} else {
-			exp_lb + 1
-		};
-		let exp_largest_uneven = if exp_ub % 2 == 1 || exp_lb == exp_ub {
-			exp_ub
-		} else {
-			exp_ub - 1
-		};
-		let exp_smallest_uneven = if exp_lb % 2 == 1 || exp_lb == exp_ub {
-			exp_lb
-		} else {
-			exp_lb + 1
-		};
-
-		let mut reason = CachedReason::new(|actions: &mut P| {
-			let base_lb_lit = actions.get_int_lower_bound_lit(self.base);
-			let base_ub_lit = actions.get_int_upper_bound_lit(self.base);
-			let exp_lb_lit = actions.get_int_lower_bound_lit(self.exponent);
-			let exp_ub_lit = actions.get_int_upper_bound_lit(self.exponent);
-			vec![base_lb_lit, base_ub_lit, exp_lb_lit, exp_ub_lit]
-		});
-
-		let base_bnd = base_lb..=base_ub;
-		let min: IntVal = [
-			pow(base_lb, exp_lb),             // base and exp always both positive
-			pow(base_lb, exp_largest_uneven), // base maybe negative
-			pow(base_ub, exp_smallest_even),  // negative base, but forced even exponent
-			if base_bnd.contains(&-1) && exp_lb != exp_ub {
-				Some(-1)
-			} else if base_bnd.contains(&0)
-				|| (base_bnd != (1..=1) && base_bnd != (-1..=-1) && exp_lb < 0)
-			{
-				Some(0)
-			} else {
-				None
-			},
-		]
-		.into_iter()
-		.flatten()
-		.min()
-		.unwrap();
-
-		actions.set_int_lower_bound(self.result, min, &mut reason)?;
-
-		let max: IntVal = vec![
-			pow(base_ub, exp_ub),              // base and exp have positive upper bounds
-			pow(base_lb, exp_largest_even),    // base maybe negative
-			pow(base_ub, exp_smallest_uneven), // negative base, but forced uneven exponent
-			if base_bnd.contains(&-1) && exp_lb != exp_ub {
-				Some(1)
-			} else if base_bnd.contains(&0)
-				|| (base_bnd != (1..=1) && base_bnd != (-1..=-1) && exp_lb < 0)
-			{
-				Some(0)
-			} else {
-				None
-			},
-		]
-		.into_iter()
-		.flatten()
-		.max()
-		.unwrap();
-
-		actions.set_int_upper_bound(self.result, max, &mut reason)?;
-
-		Ok(())
 	}
 
 	/// Propagates the bounds of the base and exponent to the result.
@@ -233,6 +186,86 @@ impl IntPowBounds {
 
 		Ok(())
 	}
+
+	/// Propagate the bounds of result variale based on the bounds of base and
+	/// exponent variables.
+	fn propagate_result<P: PropagationActions>(&mut self, actions: &mut P) -> Result<(), Conflict> {
+		let (base_lb, base_ub) = actions.get_int_bounds(self.base);
+		let (exp_lb, exp_ub) = actions.get_int_bounds(self.exponent);
+		let exp_largest_even = if exp_ub % 2 == 0 || exp_lb == exp_ub {
+			exp_ub
+		} else {
+			exp_ub - 1
+		};
+		let exp_smallest_even = if exp_lb % 2 == 0 || exp_lb == exp_ub {
+			exp_lb
+		} else {
+			exp_lb + 1
+		};
+		let exp_largest_uneven = if exp_ub % 2 == 1 || exp_lb == exp_ub {
+			exp_ub
+		} else {
+			exp_ub - 1
+		};
+		let exp_smallest_uneven = if exp_lb % 2 == 1 || exp_lb == exp_ub {
+			exp_lb
+		} else {
+			exp_lb + 1
+		};
+
+		let mut reason = CachedReason::new(|actions: &mut P| {
+			let base_lb_lit = actions.get_int_lower_bound_lit(self.base);
+			let base_ub_lit = actions.get_int_upper_bound_lit(self.base);
+			let exp_lb_lit = actions.get_int_lower_bound_lit(self.exponent);
+			let exp_ub_lit = actions.get_int_upper_bound_lit(self.exponent);
+			vec![base_lb_lit, base_ub_lit, exp_lb_lit, exp_ub_lit]
+		});
+
+		let base_bnd = base_lb..=base_ub;
+		let min: IntVal = [
+			pow(base_lb, exp_lb),             // base and exp always both positive
+			pow(base_lb, exp_largest_uneven), // base maybe negative
+			pow(base_ub, exp_smallest_even),  // negative base, but forced even exponent
+			if base_bnd.contains(&-1) && exp_lb != exp_ub {
+				Some(-1)
+			} else if base_bnd.contains(&0)
+				|| (base_bnd != (1..=1) && base_bnd != (-1..=-1) && exp_lb < 0)
+			{
+				Some(0)
+			} else {
+				None
+			},
+		]
+		.into_iter()
+		.flatten()
+		.min()
+		.unwrap();
+
+		actions.set_int_lower_bound(self.result, min, &mut reason)?;
+
+		let max: IntVal = vec![
+			pow(base_ub, exp_ub),              // base and exp have positive upper bounds
+			pow(base_lb, exp_largest_even),    // base maybe negative
+			pow(base_ub, exp_smallest_uneven), // negative base, but forced uneven exponent
+			if base_bnd.contains(&-1) && exp_lb != exp_ub {
+				Some(1)
+			} else if base_bnd.contains(&0)
+				|| (base_bnd != (1..=1) && base_bnd != (-1..=-1) && exp_lb < 0)
+			{
+				Some(0)
+			} else {
+				None
+			},
+		]
+		.into_iter()
+		.flatten()
+		.max()
+		.unwrap();
+
+		actions.set_int_upper_bound(self.result, max, &mut reason)?;
+
+		Ok(())
+	}
 }
 
 impl<P, E> Propagator<P, E> for IntPowBounds
@@ -248,16 +281,6 @@ where
 
 		Ok(())
 	}
-}
-
-/// [`Poster`] for [`IntPowBounds`].
-struct IntPowBoundsPoster {
-	/// The variable representing the base.
-	base: IntView,
-	/// The variable representing the exponent.
-	exponent: IntView,
-	/// The variable representing the result.
-	result: IntView,
 }
 
 impl Poster for IntPowBoundsPoster {
@@ -304,29 +327,6 @@ impl Poster for IntPowBoundsPoster {
 			},
 		))
 	}
-}
-
-/// Calculate the power of a base to an exponent according to the rules of
-/// integer arithmetic (matching the MiniZinc semantics).
-fn pow(base: IntVal, exponent: IntVal) -> Option<IntVal> {
-	Some(match exponent {
-		0 => 1,
-		1 => base,
-		exp if exp < 0 => match base {
-			0 => return None,
-			1 => 1,
-			-1 if exp % 2 == 0 => 1,
-			-1 => -1,
-			_ => 0,
-		},
-		_ => {
-			let mut result = 1;
-			for _ in 0..exponent {
-				result *= base;
-			}
-			result
-		}
-	})
 }
 
 #[cfg(test)]

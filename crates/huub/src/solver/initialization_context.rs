@@ -33,6 +33,15 @@ pub(crate) struct InitializationContext<'a, Oracle: 'a> {
 	pub(crate) slv: &'a mut Solver<Oracle>,
 }
 
+impl<'a, Oracle: PropagatingSolver<Engine>> DecisionActions for InitializationContext<'a, Oracle> {
+	delegate! {
+		to self.slv {
+			fn get_intref_lit(&mut self, var: IntVarRef, meaning: LitMeaning) -> BoolView;
+			fn get_num_conflicts(&self) -> u64;
+		}
+	}
+}
+
 impl<'a, Oracle: PropagatingSolver<Engine>> InitializationActions
 	for InitializationContext<'a, Oracle>
 {
@@ -41,10 +50,6 @@ impl<'a, Oracle: PropagatingSolver<Engine>> InitializationActions
 		clause: I,
 	) -> Result<(), crate::ReformulationError> {
 		self.slv.add_clause(clause)
-	}
-
-	fn new_trailed_int(&mut self, init: IntVal) -> TrailedInt {
-		self.slv.engine_mut().state.trail.track_int(init)
 	}
 
 	fn enqueue_on_bool_change(&mut self, var: BoolView) {
@@ -93,17 +98,9 @@ impl<'a, Oracle: PropagatingSolver<Engine>> InitializationActions
 			(InitRef::Brancher, _) => {} // ignore: branchers don't receive notifications, and contained literals are already observed.
 		}
 	}
-}
 
-impl<'a, Oracle: PropagatingSolver<Engine>> TrailingActions for InitializationContext<'a, Oracle> {
-	delegate! {
-		to self.slv.engine().state {
-			fn get_bool_val(&self, bv: BoolView) -> Option<bool>;
-			fn get_trailed_int(&self, x: TrailedInt) -> IntVal;
-		}
-		to self.slv.engine_mut().state {
-			fn set_trailed_int(&mut self, x: TrailedInt, v: IntVal) -> IntVal;
-		}
+	fn new_trailed_int(&mut self, init: IntVal) -> TrailedInt {
+		self.slv.engine_mut().state.trail.track_int(init)
 	}
 }
 
@@ -121,11 +118,14 @@ impl<'a, Oracle: PropagatingSolver<Engine>> InspectionActions
 	}
 }
 
-impl<'a, Oracle: PropagatingSolver<Engine>> DecisionActions for InitializationContext<'a, Oracle> {
+impl<'a, Oracle: PropagatingSolver<Engine>> TrailingActions for InitializationContext<'a, Oracle> {
 	delegate! {
-		to self.slv {
-			fn get_intref_lit(&mut self, var: IntVarRef, meaning: LitMeaning) -> BoolView;
-			fn get_num_conflicts(&self) -> u64;
+		to self.slv.engine().state {
+			fn get_bool_val(&self, bv: BoolView) -> Option<bool>;
+			fn get_trailed_int(&self, x: TrailedInt) -> IntVal;
+		}
+		to self.slv.engine_mut().state {
+			fn set_trailed_int(&mut self, x: TrailedInt, v: IntVal) -> IntVal;
 		}
 	}
 }

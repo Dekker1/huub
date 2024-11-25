@@ -31,6 +31,44 @@ use crate::{
 	BoolExpr, Constraint, InitConfig, IntSetVal, IntVal, Model, NonZeroIntVal, Solver, SolverView,
 };
 
+#[derive(Error, Debug)]
+/// Errors that can occur when converting a [`FlatZinc`] instance to a [`Model`]
+/// or [`Solver`] object.
+pub enum FlatZincError {
+	#[error("{0:?} type variables are not supported by huub")]
+	/// FlatZinc instance contained a decision variable with an unsupported type.
+	UnsupportedType(Type),
+	#[error("constraint cannot be constructed using unknown identifier `{0}'")]
+	/// FlatZinc instance contained a constraint with an unknown identifier.
+	UnknownConstraint(String),
+	#[error("constraints with identifiers `{name}' must have {expected} arguments, found {found}")]
+	/// FlatZinc instance contained a constraint with an invalid number of
+	/// arguments.
+	InvalidNumArgs {
+		/// Identifier of the constraint.
+		name: &'static str,
+		/// Number of arguments found.
+		found: usize,
+		/// Number of arguments expected.
+		expected: usize,
+	},
+	#[error("could not find identifier `{0}'")]
+	/// FlatZinc instance used an identifier that was not defined.
+	UnknownIdentifier(String),
+	#[error("argument found of type `{found}', expected `{expected}'")]
+	/// FlatZinc constraint or annotation used an argument of the wrong type.
+	InvalidArgumentType {
+		/// Expected type of the argument.
+		expected: &'static str,
+		/// Type of the argument found.
+		found: String,
+	},
+	#[error("error reformulating generated model `{0}'")]
+	/// Error that occorred when converting a generated [`Model`] to a [`Solver`]
+	/// object.
+	ReformulationError(#[from] ReformulationError),
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Statistical information about the extraction process that creates a
 /// [`Model`] from a [`FlatZinc`] instance.
@@ -78,35 +116,361 @@ impl<'a, S> FznModelBuilder<'a, S>
 where
 	S: Clone + Debug + Deref<Target = str> + Display + Eq + Hash + Ord,
 {
-	/// Create a new builder to create a model from a FlatZinc instance
-	fn new(fzn: &'a FlatZinc<S>) -> Self {
-		Self {
-			fzn,
-			map: HashMap::new(),
-			prb: Model::default(),
-			processed: vec![false; fzn.constraints.len()],
-			stats: FlatZincStatistics::default(),
+	/// Extract a [`Vec<Literal>`] from an [`AnnotationArgument`].
+	fn ann_arg_var_array(
+		&self,
+		arg: &'a AnnotationArgument<S>,
+	) -> Result<Vec<Literal<S>>, FlatZincError> {
+		match arg {
+			AnnotationArgument::Array(x) => Ok(x
+				.iter()
+				.filter_map(|l| {
+					if let AnnotationLiteral::BaseLiteral(l) = l {
+						Some(l.clone())
+					} else {
+						None
+					}
+				})
+				.collect()),
+			AnnotationArgument::Literal(AnnotationLiteral::BaseLiteral(Literal::Identifier(
+				ident,
+			))) => {
+				if let Some(arr) = self.fzn.arrays.get(ident) {
+					Ok(arr.contents.clone())
+				} else {
+					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
+				}
+			}
+			_ => Err(FlatZincError::InvalidArgumentType {
+				expected: "identifier",
+				found: format!("{:?}", arg),
+			}),
 		}
 	}
 
-	/// Preprocess the [`FlatZinc`] instance to find variables that can be seen as
-	/// views of other variables.
-	fn extract_views(&mut self) -> Result<(), FlatZincError> {
-		// Create a mapping from identifiers to the constraint that defines them
-		let defined_by: HashMap<&S, usize> = self
-			.fzn
-			.constraints
-			.iter()
-			.enumerate()
-			.filter_map(|(i, c)| c.defines.as_ref().map(|d| (d, i)))
-			.collect();
+	/// Process a [`AnnotationCall`] expected to contain a search selection
+	/// strategy, and return a tuple containing (1) the general search strategy,
+	/// and (2) the warm start instructions.
+	fn ann_to_branchings(
+		&mut self,
+		c: &'a AnnotationCall<S>,
+	) -> Result<(Vec<BoolView>, Vec<Branching>), FlatZincError> {
+		match c.id.deref() {
+			"bool_search" => {
+				if let [vars, var_sel, val_sel, _] = c.args.as_slice() {
+					let vars = self
+						.ann_arg_var_array(vars)?
+						.iter()
+						.map(|l| self.lit_bool(l))
+						.try_collect()?;
+					let var_sel = Self::ann_var_sel(var_sel)?;
+					let val_sel = Self::ann_val_sel(val_sel)?;
 
-		// Extract views for all constraints that define an identifier
-		for (i, c) in self.fzn.constraints.iter().enumerate() {
-			if let Some(ident) = &c.defines {
-				if !self.map.contains_key(ident) {
-					self.extract_view(&defined_by, i)?;
+					Ok((Vec::new(), vec![Branching::Bool(vars, var_sel, val_sel)]))
+				} else {
+					Err(FlatZincError::InvalidNumArgs {
+						name: "bool_search",
+						found: c.args.len(),
+						expected: 4,
+					})
 				}
+			}
+			"int_search" => {
+				if let [vars, var_sel, val_sel, _] = c.args.as_slice() {
+					let vars = self
+						.ann_arg_var_array(vars)?
+						.iter()
+						.map(|l| self.lit_int(l))
+						.try_collect()?;
+					let var_sel = Self::ann_var_sel(var_sel)?;
+					let val_sel = Self::ann_val_sel(val_sel)?;
+
+					Ok((Vec::new(), vec![Branching::Int(vars, var_sel, val_sel)]))
+				} else {
+					Err(FlatZincError::InvalidNumArgs {
+						name: "int_search",
+						found: c.args.len(),
+						expected: 4,
+					})
+				}
+			}
+			"seq_search" | "warm_start_array" => {
+				if let [AnnotationArgument::Array(searches)] = c.args.as_slice() {
+					let mut warm_start = Vec::new();
+					let mut branchings = Vec::new();
+					for ann in searches {
+						match ann {
+							AnnotationLiteral::Annotation(Annotation::Call(sub_call)) => {
+								let (w, b) = self.ann_to_branchings(sub_call)?;
+								warm_start.extend(w);
+								branchings.extend(b);
+							}
+							_ => warn!("unsupported search annotation: {}", ann),
+						}
+					}
+					Ok((warm_start, branchings))
+				} else {
+					Err(FlatZincError::InvalidNumArgs {
+						name: if c.id.deref() == "seq_search" {
+							"seq_search"
+						} else {
+							"warm_start_array"
+						},
+						found: c.args.len(),
+						expected: 1,
+					})
+				}
+			}
+			"warm_start_bool" => {
+				if let [vars, vals] = c.args.as_slice() {
+					let vars: Vec<_> = self
+						.ann_arg_var_array(vars)?
+						.iter()
+						.map(|l| self.lit_bool(l))
+						.try_collect()?;
+					let vals: Vec<_> = self
+						.ann_arg_var_array(vals)?
+						.iter()
+						.map(|l| self.par_bool(l))
+						.try_collect()?;
+
+					Ok((
+						vars.into_iter()
+							.zip(vals)
+							.map(|(v, b)| if b { v } else { !v })
+							.collect(),
+						Vec::new(),
+					))
+				} else {
+					Err(FlatZincError::InvalidNumArgs {
+						name: "warm_start_bool",
+						found: c.args.len(),
+						expected: 2,
+					})
+				}
+			}
+			"warm_start_int" => {
+				if let [vars, vals] = c.args.as_slice() {
+					let vars: Vec<_> = self
+						.ann_arg_var_array(vars)?
+						.iter()
+						.map(|l| self.lit_int(l))
+						.try_collect()?;
+					let vals: Vec<_> = self
+						.ann_arg_var_array(vals)?
+						.iter()
+						.map(|l| self.par_int(l))
+						.try_collect()?;
+
+					Ok((
+						vars.into_iter()
+							.zip(vals)
+							.map(|(var, val)| BoolView::IntEq(Box::new(var), val))
+							.collect(),
+						Vec::new(),
+					))
+				} else {
+					Err(FlatZincError::InvalidNumArgs {
+						name: "warm_start_int",
+						found: c.args.len(),
+						expected: 2,
+					})
+				}
+			}
+			other => {
+				warn!("ignoring unsupported search annotation: {}", other);
+				Ok((Vec::new(), Vec::new()))
+			}
+		}
+	}
+
+	/// Extract an [`ValueSelection`] from an [`AnnotationArgument`] in a
+	/// [`FlatZinc`] instance, or return a [`FlatZincError::InvalidArgumentType`]
+	/// if an invalid type.
+	fn ann_val_sel(arg: &AnnotationArgument<S>) -> Result<ValueSelection, FlatZincError> {
+		match arg {
+			AnnotationArgument::Literal(AnnotationLiteral::BaseLiteral(Literal::Identifier(s))) => {
+				match s.deref() {
+					"indomain" | "indomain_min" => Ok(ValueSelection::IndomainMin),
+					"indomain_max" => Ok(ValueSelection::IndomainMax),
+					// "indomain_median" => Ok(ValueSelection::IndomainMedian),
+					// "indomain_random" => Ok(ValueSelection::IndomainRandom),
+					// "indomain_split" => Ok(ValueSelection::IndomainSplit),
+					// "indomain_split_random" => Ok(ValueSelection::IndomainSplitRandom),
+					// "indomain_reverse_split" => Ok(ValueSelection::IndomainReverseSplit),
+					"outdomain_max" => Ok(ValueSelection::OutdomainMax),
+					"outdomain_min" => Ok(ValueSelection::OutdomainMin),
+					// "outdomain_median" => Ok(ValueSelection::OutdomainMedian),
+					// "outdomain_random" => Ok(ValueSelection::OutdomainRandom),
+					_ => {
+						warn!("unsupported value selection `{}', using `indomain_min'", s);
+						Ok(ValueSelection::IndomainMin)
+					}
+				}
+			}
+			_ => Err(FlatZincError::InvalidArgumentType {
+				expected: "string",
+				found: format!("{:?}", arg),
+			}),
+		}
+	}
+
+	/// Extract an [`VariableSelection`] from an [`AnnotationArgument`] in a
+	/// [`FlatZinc`] instance, or return a [`FlatZincError::InvalidArgumentType`]
+	/// if an invalid type.
+	fn ann_var_sel(arg: &AnnotationArgument<S>) -> Result<VariableSelection, FlatZincError> {
+		match arg {
+			AnnotationArgument::Literal(AnnotationLiteral::BaseLiteral(Literal::Identifier(s))) => {
+				match s.deref() {
+					"anti_first_fail" => Ok(VariableSelection::AntiFirstFail),
+					// "dom_w_deg" => Ok(VariableSelection::DomWDeg),
+					"first_fail" => Ok(VariableSelection::FirstFail),
+					"input_order" => Ok(VariableSelection::InputOrder),
+					"largest" => Ok(VariableSelection::Largest),
+					// "max_regret" => Ok(VariableSelection::MaxRegret),
+					// "most_constrained" => Ok(VariableSelection::MostConstrained),
+					// "occurrence" => Ok(VariableSelection::Occurrence),
+					"smallest" => Ok(VariableSelection::Smallest),
+					_ => {
+						warn!(
+							"unsupported variable selection `{}', using `input_order'",
+							s
+						);
+						Ok(VariableSelection::InputOrder)
+					}
+				}
+			}
+			_ => Err(FlatZincError::InvalidArgumentType {
+				expected: "string",
+				found: format!("{:?}", arg),
+			}),
+		}
+	}
+
+	/// Extract a [`Vec<Literal>`] from an [`Argument`].
+	fn arg_array(&self, arg: &'a Argument<S>) -> Result<&'a Vec<Literal<S>>, FlatZincError> {
+		match arg {
+			Argument::Array(x) => Ok(x),
+			Argument::Literal(Literal::Identifier(ident)) => {
+				if let Some(arr) = self.fzn.arrays.get(ident) {
+					Ok(&arr.contents)
+				} else {
+					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
+				}
+			}
+			Argument::Literal(x) => Err(FlatZincError::InvalidArgumentType {
+				expected: "array",
+				found: format!("{:?}", x),
+			}),
+		}
+	}
+
+	/// Extract a Boolean decision variable from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a Boolean decision variable.
+	fn arg_bool(&mut self, arg: &Argument<S>) -> Result<BoolView, FlatZincError> {
+		match arg {
+			Argument::Literal(l) => self.lit_bool(l),
+			_ => Err(FlatZincError::InvalidArgumentType {
+				expected: "boolean literal",
+				found: format!("{:?}", arg),
+			}),
+		}
+	}
+
+	/// Check whether the given [`Argument`] is an array of length `len`.
+	fn arg_has_length(&self, arg: &Argument<S>, len: usize) -> bool {
+		match arg {
+			Argument::Array(x) => x.len() == len,
+			Argument::Literal(Literal::Identifier(ident)) => {
+				if let Some(arr) = self.fzn.arrays.get(ident) {
+					arr.contents.len() == len
+				} else {
+					false
+				}
+			}
+			_ => false,
+		}
+	}
+
+	/// Extract a integer decision variable from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a integer decision variable.
+	fn arg_int(&mut self, arg: &Argument<S>) -> Result<IntView, FlatZincError> {
+		match arg {
+			Argument::Literal(l) => self.lit_int(l),
+			_ => Err(FlatZincError::InvalidArgumentType {
+				expected: "integer literal",
+				found: format!("{:?}", arg),
+			}),
+		}
+	}
+
+	/// Extract a parameter integer value from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not an integer parameter.
+	fn arg_par_int(&self, arg: &Argument<S>) -> Result<IntVal, FlatZincError> {
+		match arg {
+			Argument::Literal(l) => self.par_int(l),
+			_ => Err(FlatZincError::InvalidArgumentType {
+				expected: "par integer literal",
+				found: format!("{:?}", arg),
+			}),
+		}
+	}
+
+	/// Extract a parameter integer set value from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a parameter set.
+	fn arg_par_set(&self, arg: &Argument<S>) -> Result<IntSetVal, FlatZincError>
+	where
+		S: Deref<Target = str> + Clone + Debug,
+	{
+		match arg {
+			Argument::Literal(l) => self.par_set(l),
+			_ => Err(FlatZincError::InvalidArgumentType {
+				expected: "par set literal",
+				found: format!("{:?}", arg),
+			}),
+		}
+	}
+
+	/// Create branchers according to the search annotations in the FlatZinc instance
+	fn create_branchers(&mut self) -> Result<(), FlatZincError> {
+		let mut branchings = Vec::new();
+		let mut warm_start = Vec::new();
+		for ann in self.fzn.solve.ann.iter() {
+			match ann {
+				Annotation::Call(c) => {
+					let (w, b) = self.ann_to_branchings(c)?;
+					warm_start.extend(w);
+					branchings.extend(b);
+				}
+				_ => warn!("ignoring unsupported search annotation: {}", ann),
+			}
+		}
+		if !warm_start.is_empty() {
+			self.prb += Branching::WarmStart(warm_start);
+		}
+		for b in branchings {
+			self.prb += b;
+		}
+		Ok(())
+	}
+
+	/// Ensure all variables in the FlatZinc instance output are in the model
+	fn ensure_output(&mut self) -> Result<(), FlatZincError> {
+		for ident in self.fzn.output.iter() {
+			if self.fzn.variables.contains_key(ident) {
+				let _ = self.lookup_or_create_var(ident)?;
+			} else if let Some(arr) = self.fzn.arrays.get(ident) {
+				for x in &arr.contents {
+					if let Literal::Identifier(ident) = x {
+						let _ = self.lookup_or_create_var(ident)?;
+					}
+				}
+			} else {
+				return Err(FlatZincError::UnknownIdentifier(ident.to_string()));
 			}
 		}
 		Ok(())
@@ -247,214 +611,176 @@ where
 		Ok(())
 	}
 
-	/// Unify variables in the [`Model`] that are know to be equivalent.
-	///
-	/// This can happen because of `bool_eq` and `int_eq` constraints in the
-	/// [`FlatZinc`] instance.
-	fn unify_variables(&mut self) -> Result<(), FlatZincError> {
-		let mut unify_map = HashMap::<S, Rc<RefCell<Vec<Literal<S>>>>>::new();
-		let unify_map_find = |map: &HashMap<S, Rc<RefCell<Vec<Literal<S>>>>>, a: &Literal<S>| {
-			if let Literal::Identifier(x) = a {
-				map.get(x).map(Rc::clone)
-			} else {
-				None
-			}
-		};
+	/// Preprocess the [`FlatZinc`] instance to find variables that can be seen as
+	/// views of other variables.
+	fn extract_views(&mut self) -> Result<(), FlatZincError> {
+		// Create a mapping from identifiers to the constraint that defines them
+		let defined_by: HashMap<&S, usize> = self
+			.fzn
+			.constraints
+			.iter()
+			.enumerate()
+			.filter_map(|(i, c)| c.defines.as_ref().map(|d| (d, i)))
+			.collect();
 
-		let record_unify = |map: &mut HashMap<S, Rc<RefCell<Vec<Literal<S>>>>>, a, b| {
-			let a_set = unify_map_find(map, a);
-			let b_set = unify_map_find(map, b);
-			match (a_set, b_set) {
-				(Some(a_set), Some(b_set)) => {
-					let mut members = (*a_set).borrow_mut();
-					members.extend(b_set.take());
-					for b in members.iter() {
-						if let Literal::Identifier(b) = b {
-							let _ = map.insert(b.clone(), Rc::clone(&a_set));
-						}
-					}
-				}
-				(Some(a_set), None) => {
-					let mut members = (*a_set).borrow_mut();
-					members.push(b.clone());
-					if let Literal::Identifier(b) = b {
-						let _ = map.insert(b.clone(), Rc::clone(&a_set));
-					}
-				}
-				(None, Some(b_set)) => {
-					let mut members = (*b_set).borrow_mut();
-					members.push(a.clone());
-					if let Literal::Identifier(a) = a {
-						let _ = map.insert(a.clone(), Rc::clone(&b_set));
-					}
-				}
-				(None, None) => {
-					let n_set = Rc::new(RefCell::new(vec![a.clone(), b.clone()]));
-					if let Literal::Identifier(a) = a {
-						let _ = map.insert(a.clone(), Rc::clone(&n_set));
-					}
-					if let Literal::Identifier(b) = b {
-						let _ = map.insert(b.clone(), n_set);
-					}
-				}
-			};
-		};
-
+		// Extract views for all constraints that define an identifier
 		for (i, c) in self.fzn.constraints.iter().enumerate() {
-			if self.processed[i] {
-				continue;
-			}
-			let mark_processed = |me: &mut Self| me.processed[i] = true;
-			match c.id.deref() {
-				"bool_eq" => {
-					if let [Argument::Literal(a), Argument::Literal(b)] = c.args.as_slice() {
-						record_unify(&mut unify_map, a, b);
-						mark_processed(self);
-					}
-				}
-				"int_eq" => {
-					if let [Argument::Literal(a), Argument::Literal(b)] = c.args.as_slice() {
-						record_unify(&mut unify_map, a, b);
-						mark_processed(self);
-					}
-				}
-				"array_bool_element" | "array_int_element" => {
-					if let [idx, arr, Argument::Literal(b)] = c.args.as_slice() {
-						let arr = self.arg_array(arr)?;
-						let idx = self.arg_int(idx)?;
-						// unify if the index is constant
-						if let IntView::Const(idx) = idx {
-							let a = &arr[(idx - 1) as usize];
-							record_unify(&mut unify_map, a, b);
-							mark_processed(self);
-						}
-						// unify if all values in arr are equal
-						if !arr.is_empty() && arr.iter().all_equal() {
-							record_unify(&mut unify_map, &arr[0], b);
-							mark_processed(self);
-						}
-					}
-				}
-				_ => {}
-			}
-		}
-
-		let mut resolved = HashSet::new();
-		for (k, li) in unify_map.iter() {
-			if resolved.contains(k) {
-				continue;
-			}
-			let ty = &self.fzn.variables[k].ty;
-			let li = li.borrow();
-			// Determine the domain of the list of literals
-			let domain: Option<Literal<S>> = match ty {
-				Type::Bool => {
-					let mut domain = None;
-					for lit in li.iter() {
-						match lit {
-							Literal::Bool(b) => {
-								if domain == Some(!b) {
-									return Err(ReformulationError::TrivialUnsatisfiable.into());
-								} else {
-									domain = Some(*b);
-								}
-							}
-							Literal::Identifier(_) => {}
-							_ => unreachable!(),
-						};
-					}
-					domain.map(Literal::Bool)
-				}
-				Type::Int => {
-					let mut domain = None::<RangeList<IntVal>>;
-					for lit in li.iter() {
-						match lit {
-							Literal::Int(i) => {
-								let rl = (*i..=*i).into();
-								if let Some(dom) = domain {
-									domain = Some(dom.intersect(&rl));
-								} else {
-									domain = Some(rl);
-								}
-							}
-							Literal::Identifier(id) => {
-								if let Some(Domain::Int(d)) = &self.fzn.variables[id].domain {
-									if let Some(dom) = domain {
-										domain = Some(dom.intersect(d));
-									} else {
-										domain = Some(d.clone());
-									}
-								}
-							}
-							_ => unreachable!(),
-						};
-					}
-					domain.map(Literal::IntSet)
-				}
-				_ => unreachable!(),
-			};
-			// Find any view that is part of a unified group
-			let var = li
-				.iter()
-				.find_map(|lit| -> Option<ModelView> {
-					if let Literal::Identifier(id) = lit {
-						self.map.get(id).cloned()
-					} else {
-						None
-					}
-				})
-				// Create a new variable if no view is found
-				.unwrap_or_else(|| match domain {
-					Some(Literal::Bool(b)) => BoolView::Const(b).into(),
-					Some(Literal::IntSet(dom)) => self.prb.new_int_var(dom).into(),
-					Some(_) => unreachable!(),
-					None => match ty {
-						Type::Bool => self.prb.new_bool_var().into(),
-						Type::Int => panic!("unbounded integer variables are not supported yet"),
-						_ => unreachable!(),
-					},
-				});
-
-			// Map (or equate) all names in the group to the new variable
-			for lit in li.iter() {
-				if let Literal::Identifier(id) = lit {
-					match self.map.entry(id.clone()) {
-						Entry::Vacant(e) => {
-							let _ = e.insert(var.clone());
-							self.stats.vars_unified += 1;
-						}
-						Entry::Occupied(e) => {
-							if var != *e.get() {
-								match ty {
-									Type::Bool => {
-										let (ModelView::Bool(new), ModelView::Bool(existing)) =
-											(var.clone(), e.get().clone())
-										else {
-											unreachable!()
-										};
-										self.prb +=
-											BoolExpr::Equiv(vec![new.into(), existing.into()]);
-									}
-									Type::Int => {
-										let (ModelView::Int(new), ModelView::Int(existing)) =
-											(var.clone(), e.get().clone())
-										else {
-											unreachable!()
-										};
-										self.prb +=
-											Constraint::IntLinEq(vec![new, existing * -1], 0);
-									}
-									_ => unreachable!(),
-								}
-							}
-						}
-					}
-					let new = resolved.insert(id.clone());
-					debug_assert!(new);
+			if let Some(ident) = &c.defines {
+				if !self.map.contains_key(ident) {
+					self.extract_view(&defined_by, i)?;
 				}
 			}
 		}
 		Ok(())
+	}
+
+	/// Finalize the builder and return the model
+	fn finalize(self) -> (Model, HashMap<S, ModelView>, FlatZincStatistics) {
+		(self.prb, self.map, self.stats)
+	}
+
+	/// Extract a Boolean decision variable from the a [`Literal`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a Boolean decision variable.
+	fn lit_bool(&mut self, lit: &Literal<S>) -> Result<BoolView, FlatZincError> {
+		match lit {
+			Literal::Identifier(ident) => self.lookup_or_create_var(ident).map(|mv| match mv {
+				ModelView::Bool(bv) => Ok(bv),
+				ModelView::Int(_) => Err(FlatZincError::InvalidArgumentType {
+					expected: "bool",
+					found: "int".to_owned(),
+				}),
+			})?,
+			Literal::Bool(v) => Ok(BoolView::Const(*v)),
+			_ => todo!(),
+		}
+	}
+
+	/// Extract a integer decision variable from a [`Literal`] in a [`FlatZinc`]
+	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
+	/// argument was not a integer decision variable.
+	fn lit_int(&mut self, lit: &Literal<S>) -> Result<IntView, FlatZincError> {
+		match lit {
+			Literal::Identifier(ident) => self.lookup_or_create_var(ident).map(|mv| match mv {
+				ModelView::Int(iv) => Ok(iv),
+				ModelView::Bool(_) => Err(FlatZincError::InvalidArgumentType {
+					expected: "int",
+					found: "bool".to_owned(),
+				}),
+			})?,
+			Literal::Bool(v) => Ok(IntView::Const(if *v { 1 } else { 0 })),
+			Literal::Int(v) => Ok(IntView::Const(*v)),
+			_ => todo!(),
+		}
+	}
+
+	/// Find the decision variable, i.e. [`ModelView`], associated with the given
+	/// identifier, or create a new one if it doesn't yet exist.
+	fn lookup_or_create_var(&mut self, ident: &S) -> Result<ModelView, FlatZincError> {
+		match self.map.entry(ident.clone()) {
+			Entry::Vacant(e) => {
+				if let Some(var) = self.fzn.variables.get(ident) {
+					Ok(e.insert(match var.ty {
+						Type::Bool => ModelView::Bool(self.prb.new_bool_var()),
+						Type::Int => match &var.domain {
+							Some(Domain::Int(r)) => {
+								ModelView::Int(self.prb.new_int_var(r.iter().collect()))
+							}
+							Some(_) => unreachable!(),
+							None => todo!("Variables without a domain are not yet supported"),
+						},
+						_ => todo!("Variables of {:?} are not yet supported", var.ty),
+					})
+					.clone())
+				} else {
+					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
+				}
+			}
+			Entry::Occupied(e) => Ok(e.get().clone()),
+		}
+	}
+	/// Create a new builder to create a model from a FlatZinc instance
+	fn new(fzn: &'a FlatZinc<S>) -> Self {
+		Self {
+			fzn,
+			map: HashMap::new(),
+			prb: Model::default(),
+			processed: vec![false; fzn.constraints.len()],
+			stats: FlatZincStatistics::default(),
+		}
+	}
+
+	/// Extract a Boolean parameter from the a [`Literal`] in a [`FlatZinc`]
+	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
+	/// argument was not a Boolean parameter.
+	fn par_bool(&self, lit: &Literal<S>) -> Result<bool, FlatZincError> {
+		match lit {
+			Literal::Identifier(ident) => {
+				if let Some(var) = self.fzn.variables.get(ident) {
+					if var.ty == Type::Bool && var.value.is_some() {
+						self.par_bool(var.value.as_ref().unwrap())
+					} else {
+						Err(FlatZincError::InvalidArgumentType {
+							expected: "par bool",
+							found: format!("{:?}", var.ty),
+						})
+					}
+				} else {
+					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
+				}
+			}
+			Literal::Bool(v) => Ok(*v),
+			_ => todo!(),
+		}
+	}
+
+	/// Extract a parameter integer value from the a [`Literal`] in a [`FlatZinc`]
+	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
+	/// argument was not an integer parameter.
+	fn par_int(&self, lit: &Literal<S>) -> Result<IntVal, FlatZincError> {
+		match lit {
+			Literal::Identifier(ident) => {
+				if let Some(var) = self.fzn.variables.get(ident) {
+					if var.ty == Type::Int && var.value.is_some() {
+						self.par_int(var.value.as_ref().unwrap())
+					} else {
+						Err(FlatZincError::InvalidArgumentType {
+							expected: "par int",
+							found: format!("{:?}", var.ty),
+						})
+					}
+				} else {
+					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
+				}
+			}
+			Literal::Bool(v) => Ok(if *v { 1 } else { 0 }),
+			Literal::Int(v) => Ok(*v),
+			_ => todo!(),
+		}
+	}
+
+	/// Extract a parameter integer set value from the a [`Literal`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a parameter set.
+	fn par_set(&self, lit: &Literal<S>) -> Result<IntSetVal, FlatZincError> {
+		match lit {
+			Literal::Identifier(ident) => {
+				if let Some(var) = self.fzn.variables.get(ident) {
+					if var.ty == Type::IntSet && var.value.is_some() {
+						self.par_set(var.value.as_ref().unwrap())
+					} else {
+						Err(FlatZincError::InvalidArgumentType {
+							expected: "par set",
+							found: format!("{:?}", var.ty),
+						})
+					}
+				} else {
+					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
+				}
+			}
+			Literal::IntSet(v) => Ok(v.iter().collect()),
+			_ => todo!(),
+		}
 	}
 
 	/// Process the [`FlatZinc::constraints`] field and add [`Constraint`] items
@@ -1043,503 +1369,214 @@ where
 		Ok(())
 	}
 
-	/// Create branchers according to the search annotations in the FlatZinc instance
-	fn create_branchers(&mut self) -> Result<(), FlatZincError> {
-		let mut branchings = Vec::new();
-		let mut warm_start = Vec::new();
-		for ann in self.fzn.solve.ann.iter() {
-			match ann {
-				Annotation::Call(c) => {
-					let (w, b) = self.ann_to_branchings(c)?;
-					warm_start.extend(w);
-					branchings.extend(b);
-				}
-				_ => warn!("ignoring unsupported search annotation: {}", ann),
+	/// Unify variables in the [`Model`] that are know to be equivalent.
+	///
+	/// This can happen because of `bool_eq` and `int_eq` constraints in the
+	/// [`FlatZinc`] instance.
+	fn unify_variables(&mut self) -> Result<(), FlatZincError> {
+		let mut unify_map = HashMap::<S, Rc<RefCell<Vec<Literal<S>>>>>::new();
+		let unify_map_find = |map: &HashMap<S, Rc<RefCell<Vec<Literal<S>>>>>, a: &Literal<S>| {
+			if let Literal::Identifier(x) = a {
+				map.get(x).map(Rc::clone)
+			} else {
+				None
 			}
-		}
-		if !warm_start.is_empty() {
-			self.prb += Branching::WarmStart(warm_start);
-		}
-		for b in branchings {
-			self.prb += b;
-		}
-		Ok(())
-	}
+		};
 
-	/// Ensure all variables in the FlatZinc instance output are in the model
-	fn ensure_output(&mut self) -> Result<(), FlatZincError> {
-		for ident in self.fzn.output.iter() {
-			if self.fzn.variables.contains_key(ident) {
-				let _ = self.lookup_or_create_var(ident)?;
-			} else if let Some(arr) = self.fzn.arrays.get(ident) {
-				for x in &arr.contents {
-					if let Literal::Identifier(ident) = x {
-						let _ = self.lookup_or_create_var(ident)?;
+		let record_unify = |map: &mut HashMap<S, Rc<RefCell<Vec<Literal<S>>>>>, a, b| {
+			let a_set = unify_map_find(map, a);
+			let b_set = unify_map_find(map, b);
+			match (a_set, b_set) {
+				(Some(a_set), Some(b_set)) => {
+					let mut members = (*a_set).borrow_mut();
+					members.extend(b_set.take());
+					for b in members.iter() {
+						if let Literal::Identifier(b) = b {
+							let _ = map.insert(b.clone(), Rc::clone(&a_set));
+						}
 					}
 				}
-			} else {
-				return Err(FlatZincError::UnknownIdentifier(ident.to_string()));
-			}
-		}
-		Ok(())
-	}
-
-	/// Finalize the builder and return the model
-	fn finalize(self) -> (Model, HashMap<S, ModelView>, FlatZincStatistics) {
-		(self.prb, self.map, self.stats)
-	}
-
-	/// Extract a [`Vec<Literal>`] from an [`Argument`].
-	fn arg_array(&self, arg: &'a Argument<S>) -> Result<&'a Vec<Literal<S>>, FlatZincError> {
-		match arg {
-			Argument::Array(x) => Ok(x),
-			Argument::Literal(Literal::Identifier(ident)) => {
-				if let Some(arr) = self.fzn.arrays.get(ident) {
-					Ok(&arr.contents)
-				} else {
-					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
+				(Some(a_set), None) => {
+					let mut members = (*a_set).borrow_mut();
+					members.push(b.clone());
+					if let Literal::Identifier(b) = b {
+						let _ = map.insert(b.clone(), Rc::clone(&a_set));
+					}
 				}
-			}
-			Argument::Literal(x) => Err(FlatZincError::InvalidArgumentType {
-				expected: "array",
-				found: format!("{:?}", x),
-			}),
-		}
-	}
+				(None, Some(b_set)) => {
+					let mut members = (*b_set).borrow_mut();
+					members.push(a.clone());
+					if let Literal::Identifier(a) = a {
+						let _ = map.insert(a.clone(), Rc::clone(&b_set));
+					}
+				}
+				(None, None) => {
+					let n_set = Rc::new(RefCell::new(vec![a.clone(), b.clone()]));
+					if let Literal::Identifier(a) = a {
+						let _ = map.insert(a.clone(), Rc::clone(&n_set));
+					}
+					if let Literal::Identifier(b) = b {
+						let _ = map.insert(b.clone(), n_set);
+					}
+				}
+			};
+		};
 
-	/// Extract a [`Vec<Literal>`] from an [`AnnotationArgument`].
-	fn ann_arg_var_array(
-		&self,
-		arg: &'a AnnotationArgument<S>,
-	) -> Result<Vec<Literal<S>>, FlatZincError> {
-		match arg {
-			AnnotationArgument::Array(x) => Ok(x
+		for (i, c) in self.fzn.constraints.iter().enumerate() {
+			if self.processed[i] {
+				continue;
+			}
+			let mark_processed = |me: &mut Self| me.processed[i] = true;
+			match c.id.deref() {
+				"bool_eq" => {
+					if let [Argument::Literal(a), Argument::Literal(b)] = c.args.as_slice() {
+						record_unify(&mut unify_map, a, b);
+						mark_processed(self);
+					}
+				}
+				"int_eq" => {
+					if let [Argument::Literal(a), Argument::Literal(b)] = c.args.as_slice() {
+						record_unify(&mut unify_map, a, b);
+						mark_processed(self);
+					}
+				}
+				"array_bool_element" | "array_int_element" => {
+					if let [idx, arr, Argument::Literal(b)] = c.args.as_slice() {
+						let arr = self.arg_array(arr)?;
+						let idx = self.arg_int(idx)?;
+						// unify if the index is constant
+						if let IntView::Const(idx) = idx {
+							let a = &arr[(idx - 1) as usize];
+							record_unify(&mut unify_map, a, b);
+							mark_processed(self);
+						}
+						// unify if all values in arr are equal
+						if !arr.is_empty() && arr.iter().all_equal() {
+							record_unify(&mut unify_map, &arr[0], b);
+							mark_processed(self);
+						}
+					}
+				}
+				_ => {}
+			}
+		}
+
+		let mut resolved = HashSet::new();
+		for (k, li) in unify_map.iter() {
+			if resolved.contains(k) {
+				continue;
+			}
+			let ty = &self.fzn.variables[k].ty;
+			let li = li.borrow();
+			// Determine the domain of the list of literals
+			let domain: Option<Literal<S>> = match ty {
+				Type::Bool => {
+					let mut domain = None;
+					for lit in li.iter() {
+						match lit {
+							Literal::Bool(b) => {
+								if domain == Some(!b) {
+									return Err(ReformulationError::TrivialUnsatisfiable.into());
+								} else {
+									domain = Some(*b);
+								}
+							}
+							Literal::Identifier(_) => {}
+							_ => unreachable!(),
+						};
+					}
+					domain.map(Literal::Bool)
+				}
+				Type::Int => {
+					let mut domain = None::<IntSetVal>;
+					for lit in li.iter() {
+						match lit {
+							Literal::Int(i) => {
+								let rl = (*i..=*i).into();
+								if let Some(dom) = domain {
+									domain = Some(dom.intersect(&rl));
+								} else {
+									domain = Some(rl);
+								}
+							}
+							Literal::Identifier(id) => {
+								if let Some(Domain::Int(d)) = &self.fzn.variables[id].domain {
+									if let Some(dom) = domain {
+										domain = Some(dom.intersect(d));
+									} else {
+										domain = Some(d.clone());
+									}
+								}
+							}
+							_ => unreachable!(),
+						};
+					}
+					domain.map(Literal::IntSet)
+				}
+				_ => unreachable!(),
+			};
+			// Find any view that is part of a unified group
+			let var = li
 				.iter()
-				.filter_map(|l| {
-					if let AnnotationLiteral::BaseLiteral(l) = l {
-						Some(l.clone())
+				.find_map(|lit| -> Option<ModelView> {
+					if let Literal::Identifier(id) = lit {
+						self.map.get(id).cloned()
 					} else {
 						None
 					}
 				})
-				.collect()),
-			AnnotationArgument::Literal(AnnotationLiteral::BaseLiteral(Literal::Identifier(
-				ident,
-			))) => {
-				if let Some(arr) = self.fzn.arrays.get(ident) {
-					Ok(arr.contents.clone())
-				} else {
-					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
-				}
-			}
-			_ => Err(FlatZincError::InvalidArgumentType {
-				expected: "identifier",
-				found: format!("{:?}", arg),
-			}),
-		}
-	}
+				// Create a new variable if no view is found
+				.unwrap_or_else(|| match domain {
+					Some(Literal::Bool(b)) => BoolView::Const(b).into(),
+					Some(Literal::IntSet(dom)) => self.prb.new_int_var(dom).into(),
+					Some(_) => unreachable!(),
+					None => match ty {
+						Type::Bool => self.prb.new_bool_var().into(),
+						Type::Int => panic!("unbounded integer variables are not supported yet"),
+						_ => unreachable!(),
+					},
+				});
 
-	/// Process a [`AnnotationCall`] expected to contain a search selection
-	/// strategy, and return a tuple containing (1) the general search strategy,
-	/// and (2) the warm start instructions.
-	fn ann_to_branchings(
-		&mut self,
-		c: &'a AnnotationCall<S>,
-	) -> Result<(Vec<BoolView>, Vec<Branching>), FlatZincError> {
-		match c.id.deref() {
-			"bool_search" => {
-				if let [vars, var_sel, val_sel, _] = c.args.as_slice() {
-					let vars = self
-						.ann_arg_var_array(vars)?
-						.iter()
-						.map(|l| self.lit_bool(l))
-						.try_collect()?;
-					let var_sel = Self::ann_var_sel(var_sel)?;
-					let val_sel = Self::ann_val_sel(val_sel)?;
-
-					Ok((Vec::new(), vec![Branching::Bool(vars, var_sel, val_sel)]))
-				} else {
-					Err(FlatZincError::InvalidNumArgs {
-						name: "bool_search",
-						found: c.args.len(),
-						expected: 4,
-					})
-				}
-			}
-			"int_search" => {
-				if let [vars, var_sel, val_sel, _] = c.args.as_slice() {
-					let vars = self
-						.ann_arg_var_array(vars)?
-						.iter()
-						.map(|l| self.lit_int(l))
-						.try_collect()?;
-					let var_sel = Self::ann_var_sel(var_sel)?;
-					let val_sel = Self::ann_val_sel(val_sel)?;
-
-					Ok((Vec::new(), vec![Branching::Int(vars, var_sel, val_sel)]))
-				} else {
-					Err(FlatZincError::InvalidNumArgs {
-						name: "int_search",
-						found: c.args.len(),
-						expected: 4,
-					})
-				}
-			}
-			"seq_search" | "warm_start_array" => {
-				if let [AnnotationArgument::Array(searches)] = c.args.as_slice() {
-					let mut warm_start = Vec::new();
-					let mut branchings = Vec::new();
-					for ann in searches {
-						match ann {
-							AnnotationLiteral::Annotation(Annotation::Call(sub_call)) => {
-								let (w, b) = self.ann_to_branchings(sub_call)?;
-								warm_start.extend(w);
-								branchings.extend(b);
+			// Map (or equate) all names in the group to the new variable
+			for lit in li.iter() {
+				if let Literal::Identifier(id) = lit {
+					match self.map.entry(id.clone()) {
+						Entry::Vacant(e) => {
+							let _ = e.insert(var.clone());
+							self.stats.vars_unified += 1;
+						}
+						Entry::Occupied(e) => {
+							if var != *e.get() {
+								match ty {
+									Type::Bool => {
+										let (ModelView::Bool(new), ModelView::Bool(existing)) =
+											(var.clone(), e.get().clone())
+										else {
+											unreachable!()
+										};
+										self.prb +=
+											BoolExpr::Equiv(vec![new.into(), existing.into()]);
+									}
+									Type::Int => {
+										let (ModelView::Int(new), ModelView::Int(existing)) =
+											(var.clone(), e.get().clone())
+										else {
+											unreachable!()
+										};
+										self.prb +=
+											Constraint::IntLinEq(vec![new, existing * -1], 0);
+									}
+									_ => unreachable!(),
+								}
 							}
-							_ => warn!("unsupported search annotation: {}", ann),
 						}
 					}
-					Ok((warm_start, branchings))
-				} else {
-					Err(FlatZincError::InvalidNumArgs {
-						name: if c.id.deref() == "seq_search" {
-							"seq_search"
-						} else {
-							"warm_start_array"
-						},
-						found: c.args.len(),
-						expected: 1,
-					})
+					let new = resolved.insert(id.clone());
+					debug_assert!(new);
 				}
 			}
-			"warm_start_bool" => {
-				if let [vars, vals] = c.args.as_slice() {
-					let vars: Vec<_> = self
-						.ann_arg_var_array(vars)?
-						.iter()
-						.map(|l| self.lit_bool(l))
-						.try_collect()?;
-					let vals: Vec<_> = self
-						.ann_arg_var_array(vals)?
-						.iter()
-						.map(|l| self.par_bool(l))
-						.try_collect()?;
-
-					Ok((
-						vars.into_iter()
-							.zip(vals)
-							.map(|(v, b)| if b { v } else { !v })
-							.collect(),
-						Vec::new(),
-					))
-				} else {
-					Err(FlatZincError::InvalidNumArgs {
-						name: "warm_start_bool",
-						found: c.args.len(),
-						expected: 2,
-					})
-				}
-			}
-			"warm_start_int" => {
-				if let [vars, vals] = c.args.as_slice() {
-					let vars: Vec<_> = self
-						.ann_arg_var_array(vars)?
-						.iter()
-						.map(|l| self.lit_int(l))
-						.try_collect()?;
-					let vals: Vec<_> = self
-						.ann_arg_var_array(vals)?
-						.iter()
-						.map(|l| self.par_int(l))
-						.try_collect()?;
-
-					Ok((
-						vars.into_iter()
-							.zip(vals)
-							.map(|(var, val)| BoolView::IntEq(Box::new(var), val))
-							.collect(),
-						Vec::new(),
-					))
-				} else {
-					Err(FlatZincError::InvalidNumArgs {
-						name: "warm_start_int",
-						found: c.args.len(),
-						expected: 2,
-					})
-				}
-			}
-			other => {
-				warn!("ignoring unsupported search annotation: {}", other);
-				Ok((Vec::new(), Vec::new()))
-			}
 		}
-	}
-
-	/// Check whether the given [`Argument`] is an array of length `len`.
-	fn arg_has_length(&self, arg: &Argument<S>, len: usize) -> bool {
-		match arg {
-			Argument::Array(x) => x.len() == len,
-			Argument::Literal(Literal::Identifier(ident)) => {
-				if let Some(arr) = self.fzn.arrays.get(ident) {
-					arr.contents.len() == len
-				} else {
-					false
-				}
-			}
-			_ => false,
-		}
-	}
-
-	/// Find the decision variable, i.e. [`ModelView`], associated with the given
-	/// identifier, or create a new one if it doesn't yet exist.
-	fn lookup_or_create_var(&mut self, ident: &S) -> Result<ModelView, FlatZincError> {
-		match self.map.entry(ident.clone()) {
-			Entry::Vacant(e) => {
-				if let Some(var) = self.fzn.variables.get(ident) {
-					Ok(e.insert(match var.ty {
-						Type::Bool => ModelView::Bool(self.prb.new_bool_var()),
-						Type::Int => match &var.domain {
-							Some(Domain::Int(r)) => {
-								ModelView::Int(self.prb.new_int_var(r.iter().collect()))
-							}
-							Some(_) => unreachable!(),
-							None => todo!("Variables without a domain are not yet supported"),
-						},
-						_ => todo!("Variables of {:?} are not yet supported", var.ty),
-					})
-					.clone())
-				} else {
-					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
-				}
-			}
-			Entry::Occupied(e) => Ok(e.get().clone()),
-		}
-	}
-
-	/// Extract a Boolean decision variable from the a [`Literal`] in a
-	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
-	/// returned if the argument was not a Boolean decision variable.
-	fn lit_bool(&mut self, lit: &Literal<S>) -> Result<BoolView, FlatZincError> {
-		match lit {
-			Literal::Identifier(ident) => self.lookup_or_create_var(ident).map(|mv| match mv {
-				ModelView::Bool(bv) => Ok(bv),
-				ModelView::Int(_) => Err(FlatZincError::InvalidArgumentType {
-					expected: "bool",
-					found: "int".to_owned(),
-				}),
-			})?,
-			Literal::Bool(v) => Ok(BoolView::Const(*v)),
-			_ => todo!(),
-		}
-	}
-
-	/// Extract a Boolean parameter from the a [`Literal`] in a [`FlatZinc`]
-	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
-	/// argument was not a Boolean parameter.
-	fn par_bool(&self, lit: &Literal<S>) -> Result<bool, FlatZincError> {
-		match lit {
-			Literal::Identifier(ident) => {
-				if let Some(var) = self.fzn.variables.get(ident) {
-					if var.ty == Type::Bool && var.value.is_some() {
-						self.par_bool(var.value.as_ref().unwrap())
-					} else {
-						Err(FlatZincError::InvalidArgumentType {
-							expected: "par bool",
-							found: format!("{:?}", var.ty),
-						})
-					}
-				} else {
-					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
-				}
-			}
-			Literal::Bool(v) => Ok(*v),
-			_ => todo!(),
-		}
-	}
-
-	/// Extract a Boolean decision variable from the an [`Argument`] in a
-	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
-	/// returned if the argument was not a Boolean decision variable.
-	fn arg_bool(&mut self, arg: &Argument<S>) -> Result<BoolView, FlatZincError> {
-		match arg {
-			Argument::Literal(l) => self.lit_bool(l),
-			_ => Err(FlatZincError::InvalidArgumentType {
-				expected: "boolean literal",
-				found: format!("{:?}", arg),
-			}),
-		}
-	}
-
-	/// Extract an [`VariableSelection`] from an [`AnnotationArgument`] in a
-	/// [`FlatZinc`] instance, or return a [`FlatZincError::InvalidArgumentType`]
-	/// if an invalid type.
-	fn ann_var_sel(arg: &AnnotationArgument<S>) -> Result<VariableSelection, FlatZincError> {
-		match arg {
-			AnnotationArgument::Literal(AnnotationLiteral::BaseLiteral(Literal::Identifier(s))) => {
-				match s.deref() {
-					"anti_first_fail" => Ok(VariableSelection::AntiFirstFail),
-					// "dom_w_deg" => Ok(VariableSelection::DomWDeg),
-					"first_fail" => Ok(VariableSelection::FirstFail),
-					"input_order" => Ok(VariableSelection::InputOrder),
-					"largest" => Ok(VariableSelection::Largest),
-					// "max_regret" => Ok(VariableSelection::MaxRegret),
-					// "most_constrained" => Ok(VariableSelection::MostConstrained),
-					// "occurrence" => Ok(VariableSelection::Occurrence),
-					"smallest" => Ok(VariableSelection::Smallest),
-					_ => {
-						warn!(
-							"unsupported variable selection `{}', using `input_order'",
-							s
-						);
-						Ok(VariableSelection::InputOrder)
-					}
-				}
-			}
-			_ => Err(FlatZincError::InvalidArgumentType {
-				expected: "string",
-				found: format!("{:?}", arg),
-			}),
-		}
-	}
-
-	/// Extract an [`ValueSelection`] from an [`AnnotationArgument`] in a
-	/// [`FlatZinc`] instance, or return a [`FlatZincError::InvalidArgumentType`]
-	/// if an invalid type.
-	fn ann_val_sel(arg: &AnnotationArgument<S>) -> Result<ValueSelection, FlatZincError> {
-		match arg {
-			AnnotationArgument::Literal(AnnotationLiteral::BaseLiteral(Literal::Identifier(s))) => {
-				match s.deref() {
-					"indomain" | "indomain_min" => Ok(ValueSelection::IndomainMin),
-					"indomain_max" => Ok(ValueSelection::IndomainMax),
-					// "indomain_median" => Ok(ValueSelection::IndomainMedian),
-					// "indomain_random" => Ok(ValueSelection::IndomainRandom),
-					// "indomain_split" => Ok(ValueSelection::IndomainSplit),
-					// "indomain_split_random" => Ok(ValueSelection::IndomainSplitRandom),
-					// "indomain_reverse_split" => Ok(ValueSelection::IndomainReverseSplit),
-					"outdomain_max" => Ok(ValueSelection::OutdomainMax),
-					"outdomain_min" => Ok(ValueSelection::OutdomainMin),
-					// "outdomain_median" => Ok(ValueSelection::OutdomainMedian),
-					// "outdomain_random" => Ok(ValueSelection::OutdomainRandom),
-					_ => {
-						warn!("unsupported value selection `{}', using `indomain_min'", s);
-						Ok(ValueSelection::IndomainMin)
-					}
-				}
-			}
-			_ => Err(FlatZincError::InvalidArgumentType {
-				expected: "string",
-				found: format!("{:?}", arg),
-			}),
-		}
-	}
-
-	/// Extract a integer decision variable from a [`Literal`] in a [`FlatZinc`]
-	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
-	/// argument was not a integer decision variable.
-	fn lit_int(&mut self, lit: &Literal<S>) -> Result<IntView, FlatZincError> {
-		match lit {
-			Literal::Identifier(ident) => self.lookup_or_create_var(ident).map(|mv| match mv {
-				ModelView::Int(iv) => Ok(iv),
-				ModelView::Bool(_) => Err(FlatZincError::InvalidArgumentType {
-					expected: "int",
-					found: "bool".to_owned(),
-				}),
-			})?,
-			Literal::Bool(v) => Ok(IntView::Const(if *v { 1 } else { 0 })),
-			Literal::Int(v) => Ok(IntView::Const(*v)),
-			_ => todo!(),
-		}
-	}
-
-	/// Extract a parameter integer value from the a [`Literal`] in a [`FlatZinc`]
-	/// instance. A [`FlatZincError::InvalidArgumentType`] will be returned if the
-	/// argument was not an integer parameter.
-	fn par_int(&self, lit: &Literal<S>) -> Result<IntVal, FlatZincError> {
-		match lit {
-			Literal::Identifier(ident) => {
-				if let Some(var) = self.fzn.variables.get(ident) {
-					if var.ty == Type::Int && var.value.is_some() {
-						self.par_int(var.value.as_ref().unwrap())
-					} else {
-						Err(FlatZincError::InvalidArgumentType {
-							expected: "par int",
-							found: format!("{:?}", var.ty),
-						})
-					}
-				} else {
-					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
-				}
-			}
-			Literal::Bool(v) => Ok(if *v { 1 } else { 0 }),
-			Literal::Int(v) => Ok(*v),
-			_ => todo!(),
-		}
-	}
-
-	/// Extract a integer decision variable from the an [`Argument`] in a
-	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
-	/// returned if the argument was not a integer decision variable.
-	fn arg_int(&mut self, arg: &Argument<S>) -> Result<IntView, FlatZincError> {
-		match arg {
-			Argument::Literal(l) => self.lit_int(l),
-			_ => Err(FlatZincError::InvalidArgumentType {
-				expected: "integer literal",
-				found: format!("{:?}", arg),
-			}),
-		}
-	}
-
-	/// Extract a parameter integer value from the an [`Argument`] in a
-	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
-	/// returned if the argument was not an integer parameter.
-	fn arg_par_int(&self, arg: &Argument<S>) -> Result<IntVal, FlatZincError> {
-		match arg {
-			Argument::Literal(l) => self.par_int(l),
-			_ => Err(FlatZincError::InvalidArgumentType {
-				expected: "par integer literal",
-				found: format!("{:?}", arg),
-			}),
-		}
-	}
-
-	/// Extract a parameter integer set value from the a [`Literal`] in a
-	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
-	/// returned if the argument was not a parameter set.
-	fn par_set(&self, lit: &Literal<S>) -> Result<IntSetVal, FlatZincError> {
-		match lit {
-			Literal::Identifier(ident) => {
-				if let Some(var) = self.fzn.variables.get(ident) {
-					if var.ty == Type::IntSet && var.value.is_some() {
-						self.par_set(var.value.as_ref().unwrap())
-					} else {
-						Err(FlatZincError::InvalidArgumentType {
-							expected: "par set",
-							found: format!("{:?}", var.ty),
-						})
-					}
-				} else {
-					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
-				}
-			}
-			Literal::IntSet(v) => Ok(v.iter().collect()),
-			_ => todo!(),
-		}
-	}
-
-	/// Extract a parameter integer set value from the an [`Argument`] in a
-	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
-	/// returned if the argument was not a parameter set.
-	fn arg_par_set(&self, arg: &Argument<S>) -> Result<IntSetVal, FlatZincError>
-	where
-		S: Deref<Target = str> + Clone + Debug,
-	{
-		match arg {
-			Argument::Literal(l) => self.par_set(l),
-			_ => Err(FlatZincError::InvalidArgumentType {
-				expected: "par set literal",
-				found: format!("{:?}", arg),
-			}),
-		}
+		Ok(())
 	}
 }
 
@@ -1583,42 +1620,4 @@ where
 			.collect();
 		Ok((slv, map, fzn_stats))
 	}
-}
-
-#[derive(Error, Debug)]
-/// Errors that can occur when converting a [`FlatZinc`] instance to a [`Model`]
-/// or [`Solver`] object.
-pub enum FlatZincError {
-	#[error("{0:?} type variables are not supported by huub")]
-	/// FlatZinc instance contained a decision variable with an unsupported type.
-	UnsupportedType(Type),
-	#[error("constraint cannot be constructed using unknown identifier `{0}'")]
-	/// FlatZinc instance contained a constraint with an unknown identifier.
-	UnknownConstraint(String),
-	#[error("constraints with identifiers `{name}' must have {expected} arguments, found {found}")]
-	/// FlatZinc instance contained a constraint with an invalid number of
-	/// arguments.
-	InvalidNumArgs {
-		/// Identifier of the constraint.
-		name: &'static str,
-		/// Number of arguments found.
-		found: usize,
-		/// Number of arguments expected.
-		expected: usize,
-	},
-	#[error("could not find identifier `{0}'")]
-	/// FlatZinc instance used an identifier that was not defined.
-	UnknownIdentifier(String),
-	#[error("argument found of type `{found}', expected `{expected}'")]
-	/// FlatZinc constraint or annotation used an argument of the wrong type.
-	InvalidArgumentType {
-		/// Expected type of the argument.
-		expected: &'static str,
-		/// Type of the argument found.
-		found: String,
-	},
-	#[error("error reformulating generated model `{0}'")]
-	/// Error that occorred when converting a generated [`Model`] to a [`Solver`]
-	/// object.
-	ReformulationError(#[from] ReformulationError),
 }

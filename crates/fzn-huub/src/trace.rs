@@ -202,34 +202,6 @@ impl<'a, V> LitNames<'a, V> {
 
 impl<'a, V: Visit> LitNames<'a, V> {
 	#[inline]
-	/// Check if the field should and can be formatted as a literal.
-	fn check_lit(&mut self, field: &Field, value: i64) -> bool {
-		if field.name().starts_with("lit") | field.name().starts_with("bool_var") {
-			if let Some(name) = self
-				.lit_reverse_map
-				.get(&NonZeroI32::new(value as i32).unwrap())
-			{
-				self.inner
-					.record_str(field, &name.to_string(self.int_reverse_map));
-				return true;
-			}
-		}
-		false
-	}
-
-	#[inline]
-	/// Check if the field should and can be formatted as an integer variable.
-	fn check_int_var(&mut self, field: &Field, value: u64) -> bool {
-		if field.name().starts_with("int_var") {
-			if let Some(name) = self.int_reverse_map.get(value as usize) {
-				self.inner.record_str(field, name);
-				return true;
-			}
-		}
-		false
-	}
-
-	#[inline]
 	/// Check if the field should and can be formatted as a clause or a list of
 	/// literals.
 	fn check_clause(&mut self, field: &Field, value: &dyn fmt::Debug) -> bool {
@@ -249,6 +221,18 @@ impl<'a, V: Visit> LitNames<'a, V> {
 				} else {
 					self.inner.record_str(field, &v.join(", "));
 				}
+				return true;
+			}
+		}
+		false
+	}
+
+	#[inline]
+	/// Check if the field should and can be formatted as an integer variable.
+	fn check_int_var(&mut self, field: &Field, value: u64) -> bool {
+		if field.name().starts_with("int_var") {
+			if let Some(name) = self.int_reverse_map.get(value as usize) {
+				self.inner.record_str(field, name);
 				return true;
 			}
 		}
@@ -276,9 +260,39 @@ impl<'a, V: Visit> LitNames<'a, V> {
 		}
 		false
 	}
+	#[inline]
+	/// Check if the field should and can be formatted as a literal.
+	fn check_lit(&mut self, field: &Field, value: i64) -> bool {
+		if field.name().starts_with("lit") | field.name().starts_with("bool_var") {
+			if let Some(name) = self
+				.lit_reverse_map
+				.get(&NonZeroI32::new(value as i32).unwrap())
+			{
+				self.inner
+					.record_str(field, &name.to_string(self.int_reverse_map));
+				return true;
+			}
+		}
+		false
+	}
 }
 
 impl<'a, V: Visit> Visit for LitNames<'a, V> {
+	#[inline]
+	fn record_bool(&mut self, field: &Field, value: bool) {
+		self.inner.record_bool(field, value);
+	}
+
+	#[inline]
+	fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+		if self.check_clause(field, value) {
+			return;
+		}
+		if self.check_int_vars(field, value) {
+			return;
+		}
+		self.inner.record_debug(field, value);
+	}
 	#[inline]
 	fn record_f64(&mut self, field: &Field, value: f64) {
 		self.inner.record_f64(field, value);
@@ -292,32 +306,16 @@ impl<'a, V: Visit> Visit for LitNames<'a, V> {
 		self.inner.record_i64(field, value);
 	}
 
+	fn record_str(&mut self, field: &Field, value: &str) {
+		self.inner.record_str(field, value);
+	}
+
 	#[inline]
 	fn record_u64(&mut self, field: &Field, value: u64) {
 		if self.check_int_var(field, value) || self.check_lit(field, value as i64) {
 			return;
 		}
 		self.inner.record_u64(field, value);
-	}
-
-	#[inline]
-	fn record_bool(&mut self, field: &Field, value: bool) {
-		self.inner.record_bool(field, value);
-	}
-
-	fn record_str(&mut self, field: &Field, value: &str) {
-		self.inner.record_str(field, value);
-	}
-
-	#[inline]
-	fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-		if self.check_clause(field, value) {
-			return;
-		}
-		if self.check_int_vars(field, value) {
-			return;
-		}
-		self.inner.record_debug(field, value);
 	}
 }
 
@@ -366,6 +364,13 @@ impl Visit for RecordLazyLits {
 		}
 	}
 
+	fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+		match field.name() {
+			"message" => self.lazy_lit_message = format!("{value:?}") == "register new literal",
+			_ => self.other_values = true,
+		}
+	}
+
 	fn record_i64(&mut self, field: &Field, value: i64) {
 		match field.name() {
 			"lit" => self.lit = Some(NonZeroI32::new(value as i32).unwrap()),
@@ -379,13 +384,6 @@ impl Visit for RecordLazyLits {
 			"lit" => self.lit = Some(NonZeroI32::new(value as i32).unwrap()),
 			"int_var" => self.int_var = Some(value as usize),
 			"val" => self.val = Some(value as i64),
-			_ => self.other_values = true,
-		}
-	}
-
-	fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-		match field.name() {
-			"message" => self.lazy_lit_message = format!("{value:?}") == "register new literal",
 			_ => self.other_values = true,
 		}
 	}

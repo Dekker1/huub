@@ -116,6 +116,7 @@ fn optimization(c: &mut Criterion) {
 		("jobshop_la04", &FEW_SECONDS_CONFIG),
 		("jobshop_la05", &INSTANT_CONFIG),
 		("jobshop_newspaper", &INSTANT_CONFIG),
+		("portal_10_9_10", &MILLISECONDS_CONFIG),
 		("radiation_i6_9", &INSTANT_CONFIG),
 		("radiation_i8_9", &MILLISECONDS_CONFIG),
 		("svrp_s4_v2_c3", &FEW_SECONDS_CONFIG),

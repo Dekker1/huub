@@ -76,6 +76,7 @@ pub(crate) struct IntVar {
 	upper_bound: TrailedInt,
 }
 
+#[derive(Debug)]
 /// The definition given to a lazily created literal.
 pub(crate) struct LazyLitDef {
 	/// The meaning that the literal is meant to represent.
@@ -354,7 +355,7 @@ impl IntVar {
 					let (entry, prev) = self.order_encoding.entry(&self.domain, i).or_insert_with(
 						|val, prev, next| {
 							new_var(LazyLitDef {
-								meaning: LitMeaning::GreaterEq(val),
+								meaning: LitMeaning::Less(val),
 								prev,
 								next,
 							})
@@ -364,7 +365,7 @@ impl IntVar {
 						.next_value()
 						.or_insert_with(|val, prev, next| {
 							new_var(LazyLitDef {
-								meaning: LitMeaning::GreaterEq(val),
+								meaning: LitMeaning::Less(val),
 								prev,
 								next,
 							})

@@ -28,6 +28,13 @@ INSTANCES = [
             "jobshop_newspaper.fzn.json": "https://gist.githubusercontent.com/Dekker1/6662819320b5741b57913813dfcc0afa/raw/11e882546aed599a33a7c9426a445b8d0ac986c7/jobshop_newspaper.dzn",
         },
     },
+    {
+        # Portal
+        "model": "https://raw.githubusercontent.com/MiniZinc/mzn-challenge/refs/heads/develop/2024/portal/portal.mzn",
+        "instances": {
+            "portal_10_9_10.fzn.json": "https://raw.githubusercontent.com/MiniZinc/mzn-challenge/refs/heads/develop/2024/portal/random_10_9_10.json"
+        }
+    },
     {  # Radiation
         "model": "https://raw.githubusercontent.com/MiniZinc/mzn-challenge/refs/heads/develop/2020/radiation/radiation.mzn",
         "instances": {

@@ -84,6 +84,12 @@ impl From<BoolView> for IntView {
 	}
 }
 
+impl From<IntVar> for IntView {
+	fn from(value: IntVar) -> Self {
+		Self::Var(value)
+	}
+}
+
 impl Mul<IntVal> for IntView {
 	type Output = Self;
 
@@ -125,6 +131,25 @@ impl Neg for IntView {
 }
 
 impl Model {
+	/// Check whether a given integer is within the set of possible values that a
+	/// given integer view can take.
+	pub(crate) fn check_int_in_domain(&self, iv: &IntView, val: IntVal) -> bool {
+		match iv {
+			IntView::Var(v) => self.int_vars[v.0 as usize].domain.contains(&val),
+			IntView::Const(v) => *v == val,
+			IntView::Linear(t, v) => match t.rev_transform_lit(LitMeaning::Eq(val)) {
+				Ok(LitMeaning::Eq(val)) => self.int_vars[v.0 as usize].domain.contains(&val),
+				Err(false) => false,
+				_ => unreachable!(),
+			},
+			IntView::Bool(t, _) => match t.rev_transform_lit(LitMeaning::Eq(val)) {
+				Ok(LitMeaning::Eq(val)) => val == 0 || val == 1,
+				Err(false) => false,
+				_ => unreachable!(),
+			},
+		}
+	}
+
 	/// Ensure that a given integer view cannot take any of the values in the
 	/// given set.
 	pub(crate) fn diff_int_domain(

@@ -21,6 +21,7 @@ use crate::{
 		int_lin_ne::{IntLinearNotEqImpValue, IntLinearNotEqValue},
 		int_pow::IntPowBounds,
 		int_times::IntTimesBounds,
+		table_int::encode_table_int_gac,
 	},
 	solver::{
 		engine::Engine,
@@ -119,6 +120,10 @@ pub enum Constraint {
 	/// takes the value `true` if-and-only-if an integer variable is in a given
 	/// set.
 	SetInReif(IntView, IntSetVal, BoolExpr),
+	/// `table_int` constraint, which enforces that the given list of integer
+	/// views take their values according to one of the given list of integer
+	/// values.
+	TableInt(Vec<IntView>, Vec<Vec<IntVal>>),
 }
 
 impl Constraint {
@@ -448,6 +453,7 @@ impl Constraint {
 					BoolExpr::Equiv(vec![r.clone(), BoolExpr::Or(eq_lits)]).constrain(slv, map)
 				}
 			}
+			Constraint::TableInt(vars, vals) => encode_table_int_gac(slv, map, vars, vals),
 		}
 	}
 }
@@ -681,6 +687,47 @@ impl Model {
 				}
 
 				Some(Constraint::IntTimes(x, y, z))
+			}
+			Constraint::TableInt(vars, table) => {
+				debug_assert!(!vars.is_empty());
+				if vars.len() == 1 {
+					let dom = table.into_iter().map(|v| v[0]..=v[0]).collect();
+					self.intersect_int_domain(&vars[0], &dom, con)?;
+					None
+				} else {
+					// Remove any tuples that contain values outside of the domain of the
+					// variables.
+					let table = table
+						.into_iter()
+						.filter(|tup| {
+							tup.iter()
+								.enumerate()
+								.all(|(j, val)| self.check_int_in_domain(&vars[j], *val))
+						})
+						.collect_vec();
+
+					// If no tuples remain, then the problem is trivially unsatisfiable.
+					if table.is_empty() {
+						return Err(ReformulationError::TrivialUnsatisfiable);
+					}
+
+					// Restrict the domain of the variables to the values it can take in the
+					// tuple.
+					if table.len() == 1 {
+						for (j, var) in vars.iter().enumerate() {
+							self.set_int_value(var, table[0][j], con)?;
+						}
+						None
+					} else {
+						for (j, var) in vars.iter().enumerate() {
+							let dom = (0..table.len())
+								.map(|i| table[i][j]..=table[i][j])
+								.collect();
+							self.intersect_int_domain(var, &dom, con)?;
+						}
+						Some(Constraint::TableInt(vars, table))
+					}
+				}
 			}
 			con => Some(con),
 		};

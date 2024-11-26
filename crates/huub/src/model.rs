@@ -96,7 +96,7 @@ impl Model {
 	pub fn new_int_vars(&mut self, len: usize, domain: RangeList<i64>) -> Vec<IntVar> {
 		let iv = IntVar(self.int_vars.len() as u32);
 		self.int_vars
-			.extend(repeat(IntVarDef::with_domain(domain)).take(len - 1));
+			.extend(repeat(IntVarDef::with_domain(domain)).take(len));
 		(0..len).map(|i| IntVar(iv.0 + i as u32)).collect()
 	}
 
@@ -152,6 +152,13 @@ impl Model {
 				}
 				Constraint::ArrayVarIntElement(_, IntView::Var(iv) | IntView::Linear(_, iv), _) => {
 					let _ = eager_direct.insert(*iv);
+				}
+				Constraint::TableInt(vars, _) => {
+					for v in vars {
+						if let IntView::Var(iv) | IntView::Linear(_, iv) = v {
+							let _ = eager_direct.insert(*iv);
+						}
+					}
 				}
 				_ => {}
 			}

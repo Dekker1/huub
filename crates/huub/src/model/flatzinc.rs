@@ -1117,6 +1117,36 @@ where
 						});
 					}
 				}
+				"huub_table_int" => {
+					if let [args, table] = c.args.as_slice() {
+						let args = self.arg_array(args)?;
+						let args: Vec<_> = args.iter().map(|l| self.lit_int(l)).try_collect()?;
+						let table = self.arg_array(table)?;
+						let table: Vec<_> = table.iter().map(|l| self.par_int(l)).try_collect()?;
+						if args.is_empty() || (table.len() % args.len()) != 0 {
+							return Err(FlatZincError::InvalidArgumentType {
+								expected: "array of n integers, where n is divisible by the number of variables",
+								found: format!("array of {} integers, to give values to {} variables", table.len(), args.len()),
+							});
+						}
+						if table.is_empty() {
+							return Err(ReformulationError::TrivialUnsatisfiable.into());
+						}
+						let table: Vec<Vec<_>> = table
+							.into_iter()
+							.chunks(args.len())
+							.into_iter()
+							.map(|c| c.collect())
+							.collect();
+						self.prb += Constraint::TableInt(args, table);
+					} else {
+						return Err(FlatZincError::InvalidNumArgs {
+							name: "huub_table_int",
+							found: c.args.len(),
+							expected: 2,
+						});
+					}
+				}
 				"int_abs" => {
 					if let [origin, abs] = c.args.as_slice() {
 						let origin = self.arg_int(origin)?;

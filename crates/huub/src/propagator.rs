@@ -10,6 +10,7 @@ pub(crate) mod int_lin_le;
 pub(crate) mod int_lin_ne;
 pub(crate) mod int_pow;
 pub(crate) mod int_times;
+pub(crate) mod table_int;
 
 use std::{
 	error::Error,

@@ -7,7 +7,7 @@ use std::{
 	ops::{Add, Mul, Neg, Not},
 };
 
-use pindakaas::{solver::propagation::PropagatingSolver, Lit as RawLit};
+use pindakaas::{solver::propagation::PropagatingSolver, Lit as RawLit, Var as RawVar};
 
 use crate::{
 	helpers::linear_transform::LinearTransform,
@@ -93,6 +93,18 @@ impl BoolView {
 impl From<bool> for BoolView {
 	fn from(value: bool) -> Self {
 		BoolView(BoolViewInner::Const(value))
+	}
+}
+
+impl From<RawLit> for BoolView {
+	fn from(value: RawLit) -> Self {
+		BoolView(BoolViewInner::Lit(value))
+	}
+}
+
+impl From<RawVar> for BoolView {
+	fn from(value: RawVar) -> Self {
+		BoolView(BoolViewInner::Lit(value.into()))
 	}
 }
 

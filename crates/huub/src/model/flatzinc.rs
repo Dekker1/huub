@@ -435,6 +435,79 @@ where
 		}
 	}
 
+	/// Convert a Flatzinc `regular_int` constraint to a set of
+	/// [`Constraint::TableInt`] constraints.
+	fn convert_regular_to_tables(
+		&mut self,
+		vars: Vec<IntView>,
+		transitions: Vec<Vec<IntVal>>,
+		init_state: IntVal,
+		accept_states: HashSet<IntVal>,
+	) -> Vec<Constraint> {
+		// TODO: Add the regular checking
+		//
+
+		let mut table_constraints = Vec::new();
+		let mut start: Vec<Vec<IntVal>> = Vec::new();
+		let mut middle: Vec<Vec<IntVal>> = Vec::new();
+		let mut end: Vec<Vec<IntVal>> = Vec::new();
+
+		for (i, state_trans) in transitions.iter().enumerate() {
+			let cur_state = i as IntVal + 1;
+			for (j, &next_state) in state_trans.iter().enumerate() {
+				let input_read = j as IntVal + 1;
+
+				// Skip transitions to the "invalid" state
+				if next_state == 0 {
+					continue;
+				}
+				// If the current state is the initial state, add the transition to start
+				// table
+				if cur_state == init_state {
+					start.push(vec![input_read, next_state]);
+				}
+				// Add transition to the middle table (all valid transitions are allowed
+				// here)
+				middle.push(vec![cur_state, input_read, next_state]);
+				// If the resulting state is an accepting state, add the transition to the
+				// end table
+				if accept_states.contains(&next_state) {
+					end.push(vec![cur_state, input_read]);
+				}
+			}
+		}
+
+		let state_vars = self
+			.prb
+			.new_int_vars(vars.len() - 1, (1..=transitions.len() as IntVal).into())
+			.into_iter()
+			.map(IntView::from)
+			.collect_vec();
+
+		// Add table constraint to force a transition for the starting state
+		let sx: Vec<IntView> = vec![vars[0].clone(), state_vars[0].clone()];
+		table_constraints.push(Constraint::TableInt(sx, start));
+
+		// Add table constraint to force valid transition for the intermediate
+		// states
+		for i in 1..vars.len() - 1 {
+			let mx: Vec<IntView> = vec![
+				state_vars[i - 1].clone(),
+				vars[i].clone(),
+				state_vars[i].clone(),
+			];
+			table_constraints.push(Constraint::TableInt(mx, middle.clone()));
+		}
+
+		// Add table constraint to force ending in an accepting state
+		let ex: Vec<IntView> = vec![
+			state_vars.last().unwrap().clone(),
+			vars.last().unwrap().clone(),
+		];
+		table_constraints.push(Constraint::TableInt(ex, end));
+		table_constraints
+	}
+
 	/// Create branchers according to the search annotations in the FlatZinc instance
 	fn create_branchers(&mut self) -> Result<(), FlatZincError> {
 		let mut branchings = Vec::new();
@@ -1049,27 +1122,6 @@ where
 						});
 					}
 				}
-				"huub_disjunctive_strict" => {
-					if let [starts, durations] = c.args.as_slice() {
-						let starts = self
-							.arg_array(starts)?
-							.iter()
-							.map(|l| self.lit_int(l))
-							.try_collect()?;
-						let durations = self
-							.arg_array(durations)?
-							.iter()
-							.map(|l| self.par_int(l))
-							.try_collect()?;
-						self.prb += Constraint::DisjunctiveStrict(starts, durations);
-					} else {
-						return Err(FlatZincError::InvalidNumArgs {
-							name: "huub_disjunctive_strict",
-							found: c.args.len(),
-							expected: 2,
-						});
-					}
-				}
 				"huub_array_int_maximum" | "huub_array_int_minimum" => {
 					let is_maximum = c.id.deref() == "huub_array_int_maximum";
 					if let [m, args] = c.args.as_slice() {
@@ -1114,6 +1166,73 @@ where
 							name: "bool_clause_reif",
 							found: c.args.len(),
 							expected: 3,
+						});
+					}
+				}
+				"huub_disjunctive_strict" => {
+					if let [starts, durations] = c.args.as_slice() {
+						let starts = self
+							.arg_array(starts)?
+							.iter()
+							.map(|l| self.lit_int(l))
+							.try_collect()?;
+						let durations = self
+							.arg_array(durations)?
+							.iter()
+							.map(|l| self.par_int(l))
+							.try_collect()?;
+						self.prb += Constraint::DisjunctiveStrict(starts, durations);
+					} else {
+						return Err(FlatZincError::InvalidNumArgs {
+							name: "huub_disjunctive_strict",
+							found: c.args.len(),
+							expected: 2,
+						});
+					}
+				}
+				"huub_regular" => {
+					if let [x, q, s, d, q0, f] = c.args.as_slice() {
+						let x: Vec<_> = self
+							.arg_array(x)?
+							.iter()
+							.map(|l| self.lit_int(l))
+							.try_collect()?;
+
+						let q = self.arg_par_int(q)?;
+						let s = self.arg_par_int(s)?;
+						let d: Vec<_> = self
+							.arg_array(d)?
+							.iter()
+							.map(|l| self.par_int(l))
+							.try_collect()?;
+						if d.len() != (q * s) as usize {
+							return Err(FlatZincError::InvalidArgumentType {
+								expected: "array with an element for each combination of state and input value",
+								found: format!("array of size {}, for {q} states and {s} input values", d.len())
+							});
+						}
+						let d: Vec<Vec<_>> = d
+							.into_iter()
+							.chunks(s as usize)
+							.into_iter()
+							.map(|c| c.collect())
+							.collect();
+						debug_assert!(d.last().map(|t| t.len() == s as usize).unwrap_or(true));
+
+						let q0 = self.arg_par_int(q0)?;
+						let f = self.arg_par_set(f)?;
+						let f: HashSet<IntVal> = f.iter().flat_map(|r| r.into_iter()).collect();
+
+						// Convert regular constraint in to table constraints and add them to the model
+						let tables = self.convert_regular_to_tables(x, d, q0, f);
+						for table in tables {
+							self.prb += table;
+						}
+					} else {
+						return Err(FlatZincError::InvalidNumArgs {
+							name: "huub_regular",
+							found: c.args.len(),
+							expected: 6,
 						});
 					}
 				}

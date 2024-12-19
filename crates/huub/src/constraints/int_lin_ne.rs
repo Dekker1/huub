@@ -9,7 +9,9 @@ use crate::{
 	constraints::{Conflict, ExplanationActions, PropagationActions, Propagator, ReasonBuilder},
 	helpers::opt_field::OptField,
 	solver::{
-		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
+		activation_list::IntPropCond,
+		queue::PriorityLevel,
+		trail::TrailedInt,
 		value::IntVal,
 		view::{BoolViewInner, IntView, IntViewInner},
 	},
@@ -204,7 +206,7 @@ mod tests {
 
 	use crate::{
 		constraints::int_lin_ne::IntLinearNotEqValue,
-		solver::engine::int_var::{EncodingType, IntVar},
+		solver::int_var::{EncodingType, IntVar},
 		Constraint, InitConfig, Model, NonZeroIntVal, Solver,
 	};
 

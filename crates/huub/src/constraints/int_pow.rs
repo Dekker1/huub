@@ -5,7 +5,7 @@
 use crate::{
 	actions::{ExplanationActions, PropagatorInitActions},
 	constraints::{CachedReason, Conflict, PropagationActions, Propagator},
-	solver::engine::{activation_list::IntPropCond, queue::PriorityLevel},
+	solver::{activation_list::IntPropCond, queue::PriorityLevel},
 	IntVal, IntView, LitMeaning, ReformulationError,
 };
 
@@ -315,7 +315,7 @@ mod tests {
 
 	use crate::{
 		constraints::int_pow::IntPowBounds,
-		solver::engine::int_var::{EncodingType, IntVar},
+		solver::int_var::{EncodingType, IntVar},
 		Solver,
 	};
 

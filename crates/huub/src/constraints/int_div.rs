@@ -8,7 +8,7 @@ use crate::{
 	actions::{ExplanationActions, PropagatorInitActions},
 	constraints::{Conflict, PropagationActions, Propagator},
 	helpers::div_ceil,
-	solver::engine::{activation_list::IntPropCond, queue::PriorityLevel},
+	solver::{activation_list::IntPropCond, queue::PriorityLevel},
 	IntView, LitMeaning, NonZeroIntVal, ReformulationError,
 };
 
@@ -240,7 +240,7 @@ mod tests {
 
 	use crate::{
 		constraints::int_div::IntDivBounds,
-		solver::engine::int_var::{EncodingType, IntVar},
+		solver::int_var::{EncodingType, IntVar},
 		Solver,
 	};
 

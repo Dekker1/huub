@@ -6,11 +6,7 @@ use itertools::Itertools;
 use crate::{
 	actions::{ExplanationActions, PropagatorInitActions},
 	constraints::{Conflict, PropagationActions, Propagator},
-	solver::{
-		engine::{activation_list::IntPropCond, queue::PriorityLevel},
-		value::IntVal,
-		view::IntView,
-	},
+	solver::{activation_list::IntPropCond, queue::PriorityLevel, value::IntVal, view::IntView},
 	LitMeaning,
 };
 

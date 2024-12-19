@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use pindakaas::{Var as RawVar, VarRange};
 
-use crate::{solver::engine::int_var::IntVarRef, LitMeaning};
+use crate::{solver::int_var::IntVarRef, LitMeaning};
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 /// A mapping of Boolean variables to integer variables of which they represent

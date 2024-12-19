@@ -9,7 +9,9 @@ use crate::{
 	actions::{ExplanationActions, InspectionActions, PropagatorInitActions},
 	constraints::{Conflict, PropagationActions, Propagator, ReasonBuilder},
 	solver::{
-		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
+		activation_list::IntPropCond,
+		queue::PriorityLevel,
+		trail::TrailedInt,
 		view::{BoolViewInner, IntView},
 	},
 	Conjunction, LitMeaning,
@@ -571,7 +573,7 @@ mod tests {
 
 	use crate::{
 		constraints::disjunctive_strict::DisjunctiveStrictEdgeFinding,
-		solver::engine::int_var::{EncodingType, IntVar},
+		solver::int_var::{EncodingType, IntVar},
 		Solver,
 	};
 

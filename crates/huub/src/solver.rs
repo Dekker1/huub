@@ -1,6 +1,12 @@
 //! Module containing the central solving infrastructure.
 
+pub(crate) mod activation_list;
+pub(crate) mod bool_to_int;
 pub(crate) mod engine;
+pub(crate) mod int_var;
+pub(crate) mod queue;
+pub(crate) mod solving_context;
+pub(crate) mod trail;
 pub(crate) mod value;
 pub(crate) mod view;
 
@@ -24,14 +30,13 @@ use crate::{
 		PropagatorInitActions, TrailingActions,
 	},
 	solver::{
+		activation_list::IntPropCond,
 		engine::{
-			activation_list::IntPropCond,
-			int_var::{IntVarRef, LazyLitDef, OrderStorage},
-			queue::PriorityLevel,
-			trace_new_lit,
-			trail::TrailedInt,
-			BoxedBrancher, BoxedPropagator, Engine, PropRef, SearchStatistics,
+			trace_new_lit, BoxedBrancher, BoxedPropagator, Engine, PropRef, SearchStatistics,
 		},
+		int_var::{IntVarRef, LazyLitDef, OrderStorage},
+		queue::PriorityLevel,
+		trail::TrailedInt,
 		value::{AssumptionChecker, NoAssumptions, Valuation, Value},
 		view::{BoolViewInner, IntView, IntViewInner, SolverView},
 	},

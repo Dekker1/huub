@@ -29,7 +29,7 @@ pub use model::{
 pub use pindakaas::solver::SlvTermSignal;
 use pindakaas::Lit as RawLit;
 pub use solver::{
-	engine::int_var::LitMeaning,
+	int_var::LitMeaning,
 	value::{IntSetVal, IntVal, NonZeroIntVal, Valuation, Value},
 	view::{BoolView, IntView, SolverView},
 	Goal, SolveResult, Solver,

@@ -12,10 +12,8 @@ use pindakaas::{solver::propagation::PropagatingSolver, Lit as RawLit, Var as Ra
 use crate::{
 	helpers::linear_transform::LinearTransform,
 	solver::{
-		engine::{
-			int_var::{DirectStorage, IntVarRef, LitMeaning, OrderStorage},
-			Engine,
-		},
+		engine::Engine,
+		int_var::{DirectStorage, IntVarRef, LitMeaning, OrderStorage},
 		value::NonZeroIntVal,
 	},
 	IntVal, Solver,

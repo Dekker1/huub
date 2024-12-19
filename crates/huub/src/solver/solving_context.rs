@@ -15,12 +15,9 @@ use crate::{
 	},
 	constraints::{Conflict, LazyReason, ReasonBuilder},
 	solver::{
-		engine::{
-			int_var::{IntVarRef, LazyLitDef},
-			trace_new_lit,
-			trail::TrailedInt,
-			BoxedPropagator, PropRef, State,
-		},
+		engine::{trace_new_lit, BoxedPropagator, PropRef, State},
+		int_var::{IntVarRef, LazyLitDef},
+		trail::TrailedInt,
 		view::{BoolViewInner, IntViewInner},
 	},
 	BoolView, Clause, IntVal, IntView, LitMeaning,

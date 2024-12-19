@@ -4,10 +4,11 @@
 use crate::{
 	constraints::{Conflict, LazyReason, ReasonBuilder},
 	solver::{
-		engine::{
-			activation_list::IntPropCond, int_var::IntVarRef, queue::PriorityLevel,
-			trail::TrailedInt, BoxedBrancher, BoxedPropagator, PropRef,
-		},
+		activation_list::IntPropCond,
+		engine::{BoxedBrancher, BoxedPropagator, PropRef},
+		int_var::IntVarRef,
+		queue::PriorityLevel,
+		trail::TrailedInt,
 		view::{BoolViewInner, IntViewInner},
 	},
 	BoolView, IntVal, IntView, LitMeaning, ReformulationError, SolverView,

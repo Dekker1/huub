@@ -26,7 +26,8 @@ use pindakaas::Lit as RawLit;
 use crate::{
 	actions::{ExplanationActions, PropagationActions},
 	solver::{
-		engine::{solving_context::SolvingContext, BoxedPropagator, PropRef, State},
+		engine::{BoxedPropagator, PropRef, State},
+		solving_context::SolvingContext,
 		view::BoolViewInner,
 	},
 	BoolView, Conjunction,

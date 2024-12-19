@@ -6,7 +6,7 @@ use std::iter::once;
 use crate::{
 	actions::{ExplanationActions, PropagatorInitActions},
 	constraints::{Conflict, PropagationActions, Propagator},
-	solver::engine::{activation_list::IntPropCond, queue::PriorityLevel},
+	solver::{activation_list::IntPropCond, queue::PriorityLevel},
 	IntView, LitMeaning,
 };
 
@@ -93,7 +93,7 @@ mod tests {
 
 	use crate::{
 		constraints::int_abs::IntAbsBounds,
-		solver::engine::int_var::{EncodingType, IntVar},
+		solver::int_var::{EncodingType, IntVar},
 		Solver,
 	};
 

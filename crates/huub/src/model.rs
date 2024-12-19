@@ -29,9 +29,9 @@ use crate::{
 		int::{IntVar, IntVarDef, IntView},
 		reformulate::{InitConfig, ReformulationError, VariableMap},
 	},
-	solver::engine::{
+	solver::{
+		engine::Engine,
 		int_var::{EncodingType, IntVar as SlvIntVar},
-		Engine,
 	},
 	Constraint, Solver,
 };

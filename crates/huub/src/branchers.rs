@@ -8,7 +8,9 @@ use crate::{
 	actions::{BrancherInitActions, DecisionActions},
 	model::branching::{ValueSelection, VariableSelection},
 	solver::{
-		engine::{solving_context::SolvingContext, trail::TrailedInt, BoxedBrancher},
+		engine::BoxedBrancher,
+		solving_context::SolvingContext,
+		trail::TrailedInt,
 		view::{BoolViewInner, IntView, IntViewInner},
 	},
 	BoolView, LitMeaning, SolverView,

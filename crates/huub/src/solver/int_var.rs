@@ -16,7 +16,8 @@ use rangelist::RangeList;
 use crate::{
 	actions::TrailingActions,
 	solver::{
-		engine::{trail::TrailedInt, Engine},
+		engine::Engine,
+		trail::TrailedInt,
 		view::{BoolViewInner, IntViewInner},
 		IntView,
 	},
@@ -1282,7 +1283,7 @@ mod tests {
 
 	use crate::{
 		solver::{
-			engine::int_var::{EncodingType, IntVar},
+			int_var::{EncodingType, IntVar},
 			view::{BoolViewInner, IntViewInner},
 		},
 		BoolView, IntView, LitMeaning, Solver,

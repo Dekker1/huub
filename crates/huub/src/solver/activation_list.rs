@@ -177,9 +177,9 @@ mod tests {
 
 	use itertools::Itertools;
 
-	use crate::solver::engine::{
+	use crate::solver::{
 		activation_list::{ActivationList, IntEvent, IntPropCond},
-		PropRef,
+		engine::PropRef,
 	};
 
 	#[test]

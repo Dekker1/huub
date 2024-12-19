@@ -86,7 +86,7 @@ impl<E> Default for PriorityQueue<E> {
 mod test {
 	#[test]
 	fn priority_order() {
-		use crate::solver::engine::queue::PriorityLevel::*;
+		use crate::solver::queue::PriorityLevel::*;
 		assert!(Immediate > Highest);
 		assert!(Highest > High);
 		assert!(High > Medium);

@@ -5,7 +5,9 @@ use crate::{
 	actions::{ExplanationActions, PropagatorInitActions},
 	constraints::{Conflict, PropagationActions, Propagator},
 	solver::{
-		engine::{activation_list::IntPropCond, int_var::LitMeaning, queue::PriorityLevel},
+		activation_list::IntPropCond,
+		int_var::LitMeaning,
+		queue::PriorityLevel,
 		view::{IntView, IntViewInner},
 	},
 };
@@ -65,7 +67,7 @@ mod tests {
 
 	use crate::{
 		constraints::all_different_int::AllDifferentIntValue,
-		solver::engine::int_var::{EncodingType, IntVar},
+		solver::int_var::{EncodingType, IntVar},
 		IntVal, IntView, SolveResult, Solver,
 	};
 

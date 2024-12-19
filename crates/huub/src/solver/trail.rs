@@ -388,7 +388,7 @@ mod tests {
 	use pindakaas::{solver::cadical::Cadical, ClauseDatabase};
 
 	use crate::{
-		solver::engine::trail::{Trail, TrailEvent},
+		solver::trail::{Trail, TrailEvent},
 		IntVal,
 	};
 

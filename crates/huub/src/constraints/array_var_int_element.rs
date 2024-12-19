@@ -8,8 +8,7 @@ use crate::{
 	actions::{ExplanationActions, PropagatorInitActions},
 	constraints::{Conflict, PropagationActions, Propagator},
 	solver::{
-		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
-		value::IntVal,
+		activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt, value::IntVal,
 		view::IntView,
 	},
 	LitMeaning, ReformulationError,
@@ -246,7 +245,7 @@ mod tests {
 
 	use crate::{
 		constraints::array_var_int_element::ArrayVarIntElementBounds,
-		solver::engine::int_var::{EncodingType, IntVar},
+		solver::int_var::{EncodingType, IntVar},
 		Constraint, Model, Solver,
 	};
 

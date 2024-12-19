@@ -18,13 +18,6 @@ macro_rules! trace_new_lit {
 	};
 }
 
-pub(crate) mod activation_list;
-pub(crate) mod bool_to_int;
-pub(crate) mod int_var;
-pub(crate) mod queue;
-pub(crate) mod solving_context;
-pub(crate) mod trail;
-
 use std::{
 	collections::{HashMap, VecDeque},
 	mem,
@@ -46,14 +39,12 @@ use crate::{
 	branchers::{Brancher, Decision},
 	constraints::{Propagator, Reason},
 	solver::{
-		engine::{
-			activation_list::{ActivationList, IntEvent},
-			bool_to_int::BoolToIntMap,
-			int_var::{IntVar, IntVarRef, LitMeaning, OrderStorage},
-			queue::{PriorityLevel, PriorityQueue},
-			solving_context::SolvingContext,
-			trail::{Trail, TrailedInt},
-		},
+		activation_list::{ActivationList, IntEvent},
+		bool_to_int::BoolToIntMap,
+		int_var::{IntVar, IntVarRef, LitMeaning, OrderStorage},
+		queue::{PriorityLevel, PriorityQueue},
+		solving_context::SolvingContext,
+		trail::{Trail, TrailedInt},
 		view::{BoolViewInner, IntViewInner},
 		SolverConfiguration,
 	},
@@ -82,17 +73,17 @@ pub struct Engine {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct SearchStatistics {
 	/// Number of conflicts encountered
-	conflicts: u64,
+	pub(crate) conflicts: u64,
 	/// Number of search decisions left to the oracle solver
-	oracle_decisions: u64,
+	pub(crate) oracle_decisions: u64,
 	/// Peak search depth
-	peak_depth: u32,
+	pub(crate) peak_depth: u32,
 	/// Number of times a CP propagator was called
-	propagations: u64,
+	pub(crate) propagations: u64,
 	/// Number of backtracks to level 0
-	restarts: u32,
+	pub(crate) restarts: u32,
 	/// Number of decisions following the user-specified search heuristics
-	user_decisions: u64,
+	pub(crate) user_decisions: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -591,7 +582,7 @@ impl State {
 	}
 
 	/// Register the [`Reason`] to explain why `lit` has been assigned.
-	fn register_reason(&mut self, lit: RawLit, built_reason: Result<Reason, bool>) {
+	pub(crate) fn register_reason(&mut self, lit: RawLit, built_reason: Result<Reason, bool>) {
 		match built_reason {
 			Ok(reason) => {
 				// Insert new reason, possibly overwriting old one (from previous search attempt)

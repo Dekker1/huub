@@ -10,7 +10,8 @@ use crate::{
 	constraints::{Conflict, ExplanationActions, PropagationActions, Propagator},
 	helpers::opt_field::OptField,
 	solver::{
-		engine::{activation_list::IntPropCond, queue::PriorityLevel},
+		activation_list::IntPropCond,
+		queue::PriorityLevel,
 		value::IntVal,
 		view::{BoolViewInner, IntView, IntViewInner},
 	},
@@ -196,7 +197,7 @@ mod tests {
 
 	use crate::{
 		constraints::int_lin_le::IntLinearLessEqBounds,
-		solver::engine::int_var::{EncodingType, IntVar},
+		solver::int_var::{EncodingType, IntVar},
 		Constraint, InitConfig, Model, NonZeroIntVal, Solver,
 	};
 

@@ -2,6 +2,8 @@
 //! during the progation and solution checking process. This structure contains
 //! the implementation of the actions that are exposed to the propagators.
 
+use std::fmt::{self, Formatter};
+
 use delegate::delegate;
 use index_vec::IndexVec;
 use pindakaas::{solver::propagation::SolvingActions, Lit as RawLit};
@@ -11,15 +13,14 @@ use crate::{
 	actions::{
 		DecisionActions, ExplanationActions, InspectionActions, PropagationActions, TrailingActions,
 	},
-	propagator::{Conflict, LazyReason, ReasonBuilder},
+	constraints::{Conflict, LazyReason, ReasonBuilder},
 	solver::{
 		engine::{
 			int_var::{IntVarRef, LazyLitDef},
 			trace_new_lit,
 			trail::TrailedInt,
-			PropRef, State,
+			BoxedPropagator, PropRef, State,
 		},
-		poster::BoxedPropagator,
 		view::{BoolViewInner, IntViewInner},
 	},
 	BoolView, Clause, IntVal, IntView, LitMeaning,
@@ -39,7 +40,7 @@ enum ChangeType {
 /// [`SolvingActions`] exposed by the SAT oracle.
 ///
 /// This structure is used to run the propagators that have been scheduled.
-pub(crate) struct SolvingContext<'a> {
+pub struct SolvingContext<'a> {
 	/// Actions to create new variables in the oracle
 	pub(crate) slv: &'a mut dyn SolvingActions,
 	/// Engine state object
@@ -87,10 +88,10 @@ impl<'a> SolvingContext<'a> {
 	) -> Result<(), Conflict> {
 		match lit_req {
 			LitMeaning::Eq(0) | LitMeaning::Less(1) | LitMeaning::NotEq(1) => {
-				self.set_bool(BoolView(BoolViewInner::Lit(!lit)), reason)
+				self.set_bool((!lit).into(), reason)
 			}
 			LitMeaning::Eq(1) | LitMeaning::GreaterEq(1) | LitMeaning::NotEq(0) => {
-				self.set_bool(BoolView(BoolViewInner::Lit(lit)), reason)
+				self.set_bool(lit.into(), reason)
 			}
 			LitMeaning::Eq(_) => Err(Conflict::new(self, None, reason)),
 			LitMeaning::GreaterEq(i) if i > 1 => Err(Conflict::new(self, None, reason)),
@@ -152,6 +153,15 @@ impl<'a> SolvingContext<'a> {
 				return;
 			}
 		}
+	}
+}
+
+impl fmt::Debug for SolvingContext<'_> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		f.debug_struct("SolvingContext")
+			.field("state", &self.state)
+			.field("current_prop", &self.current_prop)
+			.finish()
 	}
 }
 

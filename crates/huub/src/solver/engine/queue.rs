@@ -4,7 +4,7 @@
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 /// The priority levels at which propagators can be scheduled.
-pub(crate) enum PriorityLevel {
+pub enum PriorityLevel {
 	#[allow(
 		dead_code,
 		reason = "TODO: no current propagators are this priority level"

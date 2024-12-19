@@ -5,25 +5,24 @@
 use pindakaas::Lit as RawLit;
 
 use crate::{
-	actions::InitializationActions,
+	actions::PropagatorInitActions,
+	constraints::{Conflict, ExplanationActions, PropagationActions, Propagator, ReasonBuilder},
 	helpers::opt_field::OptField,
-	propagator::{Conflict, ExplanationActions, PropagationActions, Propagator, ReasonBuilder},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
 		value::IntVal,
 		view::{BoolViewInner, IntView, IntViewInner},
 	},
-	BoolView, ReformulationError,
+	BoolView,
 };
 
 /// Type alias for the reified version of the [`IntLinearNotEqValueImpl`]
 /// propagator.
-pub(crate) type IntLinearNotEqImpValue = IntLinearNotEqValueImpl<1>;
+pub type IntLinearNotEqImpValue = IntLinearNotEqValueImpl<1>;
 
 /// Type alias for the non-reified version of the [`IntLinearNotEqValueImpl`]
 /// propagator.
-pub(crate) type IntLinearNotEqValue = IntLinearNotEqValueImpl<0>;
+pub type IntLinearNotEqValue = IntLinearNotEqValueImpl<0>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Value consistent propagator for the `int_lin_ne` or `int_lin_ne_imp`
@@ -31,7 +30,7 @@ pub(crate) type IntLinearNotEqValue = IntLinearNotEqValueImpl<0>;
 ///
 /// `R` should be `0` if the propagator is not refied, or `1` if it is. Other
 /// values are invalid.
-pub(crate) struct IntLinearNotEqValueImpl<const R: usize> {
+pub struct IntLinearNotEqValueImpl<const R: usize> {
 	/// Variables in the sumation
 	vars: Vec<IntView>,
 	/// The value the sumation should not equal
@@ -42,66 +41,86 @@ pub(crate) struct IntLinearNotEqValueImpl<const R: usize> {
 	num_fixed: TrailedInt,
 }
 
-/// [`Poster`] for a the [`IntLinearNotEqValue`] or [`IntLinearNotEqImpValue`]
-/// propagator.
-struct IntLinearNotEqValuePoster<const R: usize> {
-	/// Variables in the sumation
-	vars: Vec<IntView>,
-	/// Value that the sum of the variables must not equal.
-	val: IntVal,
-	/// Optional reification variable implying the constraint.
-	reification: OptField<R, RawLit>,
-}
-
 impl IntLinearNotEqImpValue {
-	/// Prepare the [`IntLinearNotEqImpValue`] propagator to be posted to the
+	/// Create a new [`IntLinearNotEqImpValue`] propagator and post it in the
 	/// solver.
-	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
-		vars: VI,
-		mut val: IntVal,
-		r: RawLit,
-	) -> impl Poster {
-		IntLinearNotEqValuePoster::<1> {
-			vars: vars
-				.into_iter()
-				.filter_map(|v| {
-					let v = v.into();
-					if let IntViewInner::Const(c) = v.0 {
-						val -= c;
-						None
-					} else {
-						Some(v)
-					}
-				})
-				.collect(),
-			val,
-			reification: OptField::new(r),
+	pub fn new_in(
+		solver: &mut impl PropagatorInitActions,
+		vars: impl IntoIterator<Item = IntView>,
+		mut violation: IntVal,
+		reification: BoolView,
+	) {
+		let reification = match reification.0 {
+			BoolViewInner::Lit(r) => r,
+			BoolViewInner::Const(true) => {
+				return IntLinearNotEqValue::new_in(solver, vars, violation)
+			}
+			BoolViewInner::Const(false) => return,
+		};
+
+		let vars: Vec<IntView> = vars
+			.into_iter()
+			.filter(|v| {
+				if let IntViewInner::Const(c) = v.0 {
+					violation -= c;
+					false
+				} else {
+					true
+				}
+			})
+			.collect();
+
+		let num_fixed = solver.new_trailed_int(0);
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				vars: vars.clone(),
+				violation,
+				reification: OptField::new(reification),
+				num_fixed,
+			}),
+			PriorityLevel::Low,
+		);
+
+		for &v in vars.iter() {
+			solver.enqueue_on_int_change(prop, v, IntPropCond::Fixed);
 		}
+		solver.enqueue_on_bool_change(prop, reification.into());
 	}
 }
 
 impl IntLinearNotEqValue {
-	/// Prepare the [`IntLinearNotEqValue`] propagator to be posted to the
+	/// Create a new [`IntLinearNotEqImpValue`] propagator and post it in the
 	/// solver.
-	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
-		vars: VI,
-		mut val: IntVal,
-	) -> impl Poster {
-		IntLinearNotEqValuePoster::<0> {
-			vars: vars
-				.into_iter()
-				.filter_map(|v| {
-					let v = v.into();
-					if let IntViewInner::Const(c) = v.0 {
-						val -= c;
-						None
-					} else {
-						Some(v)
-					}
-				})
-				.collect(),
-			val,
-			reification: Default::default(),
+	pub fn new_in(
+		solver: &mut impl PropagatorInitActions,
+		vars: impl IntoIterator<Item = IntView>,
+		mut violation: IntVal,
+	) {
+		let vars: Vec<IntView> = vars
+			.into_iter()
+			.filter(|v| {
+				if let IntViewInner::Const(c) = v.0 {
+					violation -= c;
+					false
+				} else {
+					true
+				}
+			})
+			.collect();
+
+		let num_fixed = solver.new_trailed_int(0);
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				vars: vars.clone(),
+				violation,
+				reification: Default::default(),
+				num_fixed,
+			}),
+			PriorityLevel::Low,
+		);
+
+		for &v in vars.iter() {
+			solver.enqueue_on_int_change(prop, v, IntPropCond::Fixed);
 		}
 	}
 }
@@ -126,7 +145,7 @@ impl<const R: usize> IntLinearNotEqValueImpl<R> {
 				.collect();
 			if let Some(&r) = self.reification.get() {
 				if data != self.vars.len() {
-					conj.push(BoolView(BoolViewInner::Lit(r)));
+					conj.push(r.into());
 				}
 			}
 			conj
@@ -141,8 +160,8 @@ where
 {
 	#[tracing::instrument(name = "int_lin_ne", level = "trace", skip(self, actions))]
 	fn propagate(&mut self, actions: &mut P) -> Result<(), Conflict> {
-		let (r, r_fixed) = if let Some(r) = self.reification.get() {
-			let r_bv = BoolView(BoolViewInner::Lit(*r));
+		let (r, r_fixed) = if let Some(&r) = self.reification.get() {
+			let r_bv = r.into();
 			match actions.get_bool_val(r_bv) {
 				Some(false) => return Ok(()),
 				Some(true) => (r_bv, true),
@@ -176,33 +195,6 @@ where
 	}
 }
 
-impl<const R: usize> Poster for IntLinearNotEqValuePoster<R> {
-	fn post<I: InitializationActions>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		let prop = IntLinearNotEqValueImpl {
-			vars: self.vars,
-			violation: self.val,
-			reification: self.reification,
-			num_fixed: actions.new_trailed_int(0),
-		};
-		for &v in prop.vars.iter() {
-			actions.enqueue_on_int_change(v, IntPropCond::Fixed);
-		}
-		if let Some(r) = prop.reification.get() {
-			actions.enqueue_on_bool_change(BoolView(BoolViewInner::Lit(*r)));
-		}
-		Ok((
-			Box::new(prop),
-			QueuePreferences {
-				enqueue_on_post: false,
-				priority: PriorityLevel::Low,
-			},
-		))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
@@ -211,7 +203,7 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		propagator::int_lin_ne::IntLinearNotEqValue,
+		constraints::int_lin_ne::IntLinearNotEqValue,
 		solver::engine::int_var::{EncodingType, IntVar},
 		Constraint, InitConfig, Model, NonZeroIntVal, Solver,
 	};
@@ -239,11 +231,7 @@ mod tests {
 			EncodingType::Eager,
 		);
 
-		slv.add_propagator(IntLinearNotEqValue::prepare(
-			vec![a * NonZeroIntVal::new(2).unwrap(), b, c],
-			6,
-		))
-		.unwrap();
+		IntLinearNotEqValue::new_in(&mut slv, vec![a * NonZeroIntVal::new(2).unwrap(), b, c], 6);
 
 		slv.expect_solutions(
 			&[a, b, c],

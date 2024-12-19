@@ -43,8 +43,8 @@ use tracing::{debug, trace};
 
 use crate::{
 	actions::{DecisionActions, ExplanationActions, InspectionActions, TrailingActions},
-	brancher::Decision,
-	propagator::Reason,
+	branchers::{Brancher, Decision},
+	constraints::{Propagator, Reason},
 	solver::{
 		engine::{
 			activation_list::{ActivationList, IntEvent},
@@ -54,12 +54,19 @@ use crate::{
 			solving_context::SolvingContext,
 			trail::{Trail, TrailedInt},
 		},
-		poster::{BoxedBrancher, BoxedPropagator},
 		view::{BoolViewInner, IntViewInner},
 		SolverConfiguration,
 	},
 	BoolView, Clause, Conjunction, IntVal, IntView,
 };
+
+/// Type alias to represent [`Brancher`] contained in a [`Box`], that is used by
+/// [`Engine`].
+pub(crate) type BoxedBrancher = Box<dyn for<'a> Brancher<SolvingContext<'a>>>;
+
+/// Type alias to represent [`Propagator`] contained in a [`Box`], that is used
+/// by [`Engine`].
+pub(crate) type BoxedPropagator = Box<dyn for<'a> Propagator<SolvingContext<'a>, State>>;
 
 #[derive(Debug, Default, Clone)]
 /// A propagation engine implementing the [`Propagator`] trait.
@@ -89,7 +96,7 @@ pub struct SearchStatistics {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct State {
+pub struct State {
 	/// Solver confifguration
 	pub(crate) config: SolverConfiguration,
 
@@ -159,7 +166,7 @@ impl PropagatorExtension for Engine {
 		// Find reason
 		let reason = self.state.reason_map.remove(&propagated_lit);
 		// Restore the current state to the state when the propagation happened if explaining lazily
-		if matches!(reason, Some(Reason::Lazy(_, _))) {
+		if matches!(reason, Some(Reason::Lazy(_))) {
 			self.state.trail.goto_assign_lit(propagated_lit);
 		}
 		// Create a clause from the reason

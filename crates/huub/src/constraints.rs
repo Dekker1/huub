@@ -1,16 +1,16 @@
 //! Module containing the definitions for propagators and their implementations.
 
-pub(crate) mod all_different_int;
-pub(crate) mod array_int_minimum;
-pub(crate) mod array_var_int_element;
-pub(crate) mod disjunctive_strict;
-pub(crate) mod int_abs;
-pub(crate) mod int_div;
-pub(crate) mod int_lin_le;
-pub(crate) mod int_lin_ne;
-pub(crate) mod int_pow;
-pub(crate) mod int_times;
-pub(crate) mod table_int;
+pub mod all_different_int;
+pub mod array_int_minimum;
+pub mod array_var_int_element;
+pub mod disjunctive_strict;
+pub mod int_abs;
+pub mod int_div;
+pub mod int_lin_le;
+pub mod int_lin_ne;
+pub mod int_pow;
+pub mod int_times;
+pub mod table_int;
 
 use std::{
 	error::Error,
@@ -26,8 +26,7 @@ use pindakaas::Lit as RawLit;
 use crate::{
 	actions::{ExplanationActions, PropagationActions},
 	solver::{
-		engine::{solving_context::SolvingContext, PropRef, State},
-		poster::BoxedPropagator,
+		engine::{solving_context::SolvingContext, BoxedPropagator, PropRef, State},
 		view::BoolViewInner,
 	},
 	BoolView, Conjunction,
@@ -46,7 +45,7 @@ pub(crate) enum CachedReason<A: ExplanationActions, R: ReasonBuilder<A>> {
 /// Conflict is an error type returned when a variable is assigned two
 /// inconsistent values.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Conflict {
+pub struct Conflict {
 	/// The subject of the conflict (i.e., the literal that couldn't be propagated).
 	///
 	/// If `None`, the conflict is a root conflict.
@@ -59,14 +58,14 @@ pub(crate) struct Conflict {
 /// A trait to allow the cloning of boxed propagators.
 ///
 /// This trait allows us to implement [`Clone`] for [`BoxedPropagator`].
-pub(crate) trait DynPropClone {
+pub trait DynPropClone {
 	/// Clone the object and store it as a boxed trait object.
 	fn clone_dyn_prop(&self) -> BoxedPropagator;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// A note that the mentioned propagator will compute the `Reason` if requested.
-pub(crate) struct LazyReason(pub(crate) PropRef, pub(crate) u64);
+pub struct LazyReason(pub(crate) PropRef, pub(crate) u64);
 
 /// A trait for a propagator that is called during the search process to filter
 /// the domains of decision variables, and detect inconsistencies.
@@ -78,9 +77,7 @@ pub(crate) struct LazyReason(pub(crate) PropRef, pub(crate) u64);
 /// [`PropagationActions::deferred_reason`]. If the explanation is needed, then
 /// the propagation engine will revert the state of the solver and call
 /// [`Propagator::explain`] to receive the explanation.
-pub(crate) trait Propagator<P: PropagationActions, E: ExplanationActions>:
-	Debug + DynPropClone
-{
+pub trait Propagator<P: PropagationActions, E: ExplanationActions>: Debug + DynPropClone {
 	/// The propagate method is called during the search process to allow the
 	/// propagator to enforce
 	fn propagate(&mut self, actions: &mut P) -> Result<(), Conflict> {
@@ -113,10 +110,10 @@ pub(crate) trait Propagator<P: PropagationActions, E: ExplanationActions>:
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// A conjunction of literals that implies a change in the state
-pub(crate) enum Reason {
+pub enum Reason {
 	/// A promise that a given propagator will compute a causation of the change
 	/// when given the attached data.
-	Lazy(PropRef, u64),
+	Lazy(LazyReason),
 	/// A conjunction of literals forming the causation of the change.
 	Eager(Box<[RawLit]>),
 	/// A single literal that is the causation of the change.
@@ -124,7 +121,7 @@ pub(crate) enum Reason {
 }
 
 /// A trait for types that can be used to construct a `Reason`
-pub(crate) trait ReasonBuilder<A: ExplanationActions + ?Sized> {
+pub trait ReasonBuilder<A: ExplanationActions + ?Sized> {
 	/// Construct a `Reason`, or return a Boolean indicating that the reason is
 	/// trivial.
 	fn build_reason(self, actions: &mut A) -> Result<Reason, bool>;
@@ -226,7 +223,7 @@ where
 
 impl<A: ExplanationActions> ReasonBuilder<A> for LazyReason {
 	fn build_reason(self, _: &mut A) -> Result<Reason, bool> {
-		Ok(Reason::Lazy(self.0, self.1))
+		Ok(Reason::Lazy(self))
 	}
 }
 
@@ -248,7 +245,7 @@ impl Reason {
 		lit: Option<RawLit>,
 	) -> Clause {
 		match self {
-			Reason::Lazy(prop, data) => {
+			Reason::Lazy(LazyReason(prop, data)) => {
 				let reason = props[*prop].explain(actions, lit, *data);
 				reason.into_iter().map(|l| !l).chain(lit).collect()
 			}

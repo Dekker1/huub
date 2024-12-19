@@ -1,18 +1,36 @@
-//! Traits that define different sets of actions that can be performed at
-//! different phases of the solving process.
+//! Traits that encapsulate different sets of actions that can be performed at
+//! different phases and by different objects in the solving process.
 
 use crate::{
-	propagator::{Conflict, LazyReason, ReasonBuilder},
+	constraints::{Conflict, LazyReason, ReasonBuilder},
 	solver::{
-		engine::{activation_list::IntPropCond, int_var::IntVarRef, trail::TrailedInt},
+		engine::{
+			activation_list::IntPropCond, int_var::IntVarRef, queue::PriorityLevel,
+			trail::TrailedInt, BoxedBrancher, BoxedPropagator, PropRef,
+		},
 		view::{BoolViewInner, IntViewInner},
 	},
-	BoolView, IntVal, IntView, LitMeaning, ReformulationError,
+	BoolView, IntVal, IntView, LitMeaning, ReformulationError, SolverView,
 };
 
-/// Actions that can be performed by a [`Brancher`] when making search
-/// decisions.
-pub(crate) trait DecisionActions: InspectionActions {
+/// Actions that can be performed during the initlization of propagators and
+/// branchers.
+pub trait BrancherInitActions: DecisionActions {
+	/// Ensure that any relevant decision variable are marked internally as a
+	/// decidable variable.
+	fn ensure_decidable(&mut self, view: SolverView);
+
+	/// Create a new trailed integer value with the given initial value.
+	fn new_trailed_int(&mut self, init: IntVal) -> TrailedInt;
+
+	/// Push a new [`crate::branchers::Brancher`] to the end of the solving
+	/// branching queue.
+	fn push_brancher(&mut self, brancher: BoxedBrancher);
+}
+
+/// Actions that can be performed by a [`crate::branchers::Brancher`] when
+/// making search decisions.
+pub trait DecisionActions: InspectionActions {
 	/// Get (or create) a literal for the given integer view with the given meaning.
 	fn get_int_lit(&mut self, var: IntView, mut meaning: LitMeaning) -> BoolView {
 		{
@@ -70,7 +88,7 @@ pub(crate) trait DecisionActions: InspectionActions {
 
 /// Actions that can be performed when explaining a propagation that was
 /// performed.
-pub(crate) trait ExplanationActions: InspectionActions {
+pub trait ExplanationActions: InspectionActions {
 	/// Get a Boolean view that represents the given meaning (that is currently
 	/// `true`) on the integer view, if it already exists.
 	fn try_int_lit(&self, var: IntView, meaning: LitMeaning) -> Option<BoolView>;
@@ -93,29 +111,9 @@ pub(crate) trait ExplanationActions: InspectionActions {
 	fn get_int_upper_bound_lit(&mut self, var: IntView) -> BoolView;
 }
 
-/// Actions that can be performed during the initlization of propagators and
-/// branchers.
-pub(crate) trait InitializationActions: DecisionActions {
-	/// Add a clause to the solver.
-	fn add_clause<I: IntoIterator<Item = BoolView>>(
-		&mut self,
-		clause: I,
-	) -> Result<(), ReformulationError>;
-
-	/// Create a new trailed integer value with the given initial value.
-	fn new_trailed_int(&mut self, init: IntVal) -> TrailedInt;
-
-	/// Enqueue a propagator to be enqueued when a boolean variable is assigned.
-	fn enqueue_on_bool_change(&mut self, var: BoolView);
-
-	/// Enqueue a propagator to be enqueued when an integer variable is changed
-	/// according to the given propagation condition.
-	fn enqueue_on_int_change(&mut self, var: IntView, condition: IntPropCond);
-}
-
 /// Actions that can generally be performed when the solver is (partially)
 /// initialized.
-pub(crate) trait InspectionActions: TrailingActions {
+pub trait InspectionActions: TrailingActions {
 	/// Get the minimum value that an integer view is guaranteed to take (given
 	/// the current search decisions).
 	fn get_int_lower_bound(&self, var: IntView) -> IntVal;
@@ -146,7 +144,7 @@ pub(crate) trait InspectionActions: TrailingActions {
 }
 
 /// Actions that can be performed during propagation.
-pub(crate) trait PropagationActions: ExplanationActions + DecisionActions {
+pub trait PropagationActions: ExplanationActions + DecisionActions {
 	/// Enforce a boolean view to be `true` because of a given `reason`.
 	///
 	/// Note that it is possible to enforce that a boolean view is `false` by
@@ -171,7 +169,6 @@ pub(crate) trait PropagationActions: ExplanationActions + DecisionActions {
 		reason: impl ReasonBuilder<Self>,
 	) -> Result<(), Conflict>;
 
-	#[expect(dead_code, reason = "TODO: no current use case in propagators")]
 	/// Enforce that a an integer view takes a value `val` because of the given
 	/// `reason`.
 	fn set_int_val(
@@ -191,13 +188,39 @@ pub(crate) trait PropagationActions: ExplanationActions + DecisionActions {
 	) -> Result<(), Conflict>;
 
 	/// Create a placeholder reason that will cause the solver to call the
-	/// propagator's [`Propagator::explain`] method when the reason is needed.
+	/// propagator's [`crate::constraints::Propagator::explain`] method when the
+	/// reason is needed.
 	fn deferred_reason(&self, data: u64) -> LazyReason;
+}
+
+/// Actions that can be performed during the initialization of propagators.
+pub trait PropagatorInitActions: DecisionActions {
+	/// Add a clause to the solver.
+	fn add_clause<I: IntoIterator<Item = BoolView>>(
+		&mut self,
+		clause: I,
+	) -> Result<(), ReformulationError>;
+
+	/// Add a propagator to the solver.
+	fn add_propagator(&mut self, propagator: BoxedPropagator, priority: PriorityLevel) -> PropRef;
+
+	/// Create a new trailed integer value with the given initial value.
+	fn new_trailed_int(&mut self, init: IntVal) -> TrailedInt;
+
+	/// Enqueue a propagator to be activated at the root node.
+	fn enqueue_now(&mut self, prop: PropRef);
+
+	/// Enqueue a propagator to be enqueued when a boolean variable is assigned.
+	fn enqueue_on_bool_change(&mut self, prop: PropRef, var: BoolView);
+
+	/// Enqueue a propagator to be enqueued when an integer variable is changed
+	/// according to the given propagation condition.
+	fn enqueue_on_int_change(&mut self, prop: PropRef, var: IntView, condition: IntPropCond);
 }
 
 /// Basic actions that can be performed when the trailing infrastructure is
 /// available.
-pub(crate) trait TrailingActions {
+pub trait TrailingActions {
 	/// Get the current value of a [`BoolView`], if it has been assigned.
 	fn get_bool_val(&self, bv: BoolView) -> Option<bool>;
 	/// Get the current value of a [`TrailedInt`].

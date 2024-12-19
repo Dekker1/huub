@@ -55,7 +55,7 @@ pub(crate) enum IntEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// The conditions of an integer variable domain change that can trigger a
 /// propagator to be enqueued.
-pub(crate) enum IntPropCond {
+pub enum IntPropCond {
 	/// Condition that triggers when the variable is fixed.
 	Fixed,
 	/// Condition that triggers when the lower bound of the variable changes.

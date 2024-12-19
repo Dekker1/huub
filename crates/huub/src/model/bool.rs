@@ -22,8 +22,8 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// A propositional logic formula that can be used as part of a [`Constraint`]
-/// in a [`Model`].
+/// A propositional logic formula that can be used as part of a [`crate::Constraint`]
+/// in a [`crate::Model`].
 pub enum BoolExpr {
 	/// Direct Boolean view
 	View(BoolView),

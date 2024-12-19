@@ -3,7 +3,7 @@
 use pindakaas::solver::propagation::PropagatingSolver;
 
 use crate::{
-	brancher::{BoolBrancher, IntBrancher, WarmStartBrancher},
+	branchers::{BoolBrancher, IntBrancher, WarmStartBrancher},
 	model::{bool::BoolView, int::IntView, reformulate::VariableMap},
 	solver::engine::Engine,
 	Solver,
@@ -74,11 +74,11 @@ impl Branching {
 		match self {
 			Branching::Bool(vars, var_sel, val_sel) => {
 				let vars = vars.iter().map(|v| map.get_bool(slv, v)).collect();
-				slv.add_brancher(BoolBrancher::prepare(vars, *var_sel, *val_sel));
+				BoolBrancher::new_in(slv, vars, *var_sel, *val_sel);
 			}
 			Branching::Int(v, var_sel, val_sel) => {
 				let vars: Vec<_> = v.iter().map(|v| v.to_arg(slv, map)).collect();
-				slv.add_brancher(IntBrancher::prepare(vars, *var_sel, *val_sel));
+				IntBrancher::new_in(slv, vars, *var_sel, *val_sel);
 			}
 			Branching::Seq(branchings) => {
 				for b in branchings {
@@ -87,7 +87,7 @@ impl Branching {
 			}
 			Branching::WarmStart(exprs) => {
 				let decisions = exprs.iter().map(|v| map.get_bool(slv, v)).collect();
-				slv.add_brancher(WarmStartBrancher::prepare(decisions));
+				WarmStartBrancher::new_in(slv, decisions);
 			}
 		}
 	}

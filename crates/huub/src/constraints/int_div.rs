@@ -5,13 +5,10 @@
 use std::mem;
 
 use crate::{
-	actions::{ExplanationActions, InitializationActions},
+	actions::{ExplanationActions, PropagatorInitActions},
+	constraints::{Conflict, PropagationActions, Propagator},
 	helpers::div_ceil,
-	propagator::{Conflict, PropagationActions, Propagator},
-	solver::{
-		engine::{activation_list::IntPropCond, queue::PriorityLevel},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
-	},
+	solver::engine::{activation_list::IntPropCond, queue::PriorityLevel},
 	IntView, LitMeaning, NonZeroIntVal, ReformulationError,
 };
 
@@ -20,17 +17,7 @@ use crate::{
 ///
 /// This propagator enforces truncating rounding on the result of the division,
 /// and enforces that the denominator is non-zero.
-pub(crate) struct IntDivBounds {
-	/// The numerator of the division
-	numerator: IntView,
-	/// The denominator of the division
-	denominator: IntView,
-	/// Result of the division
-	result: IntView,
-}
-
-/// [`Poster`] for the [`IntDivBounds`] propagator.
-struct IntDivBoundsPoster {
+pub struct IntDivBounds {
 	/// The numerator of the division
 	numerator: IntView,
 	/// The denominator of the division
@@ -40,17 +27,49 @@ struct IntDivBoundsPoster {
 }
 
 impl IntDivBounds {
-	/// Prepare a new [`IntDivBounds`] propagator to be posted to the solver.
-	pub(crate) fn prepare(
+	/// Create a new [`IntDivBounds`] propagator and post it in the solver.
+	pub fn new_in(
+		solver: &mut impl PropagatorInitActions,
 		numerator: IntView,
 		denominator: IntView,
 		result: IntView,
-	) -> impl Poster {
-		IntDivBoundsPoster {
-			numerator,
-			denominator,
-			result,
+	) -> Result<(), ReformulationError> {
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				numerator,
+				denominator,
+				result,
+			}),
+			PriorityLevel::Highest,
+		);
+		// Subscribe to bounds changes on each of the variables.
+		solver.enqueue_on_int_change(prop, numerator, IntPropCond::Bounds);
+		solver.enqueue_on_int_change(prop, denominator, IntPropCond::Bounds);
+		solver.enqueue_on_int_change(prop, result, IntPropCond::Bounds);
+
+		// Ensure the consistency of the signs of the three variables using the following clauses.
+		if solver.get_int_lower_bound(numerator) < 0
+			|| solver.get_int_lower_bound(denominator) < 0
+			|| solver.get_int_lower_bound(result) < 0
+		{
+			let num_pos = solver.get_int_lit(numerator, LitMeaning::GreaterEq(0));
+			let num_neg = solver.get_int_lit(numerator, LitMeaning::Less(1));
+			let denom_pos = solver.get_int_lit(denominator, LitMeaning::GreaterEq(0));
+			let denom_neg = !denom_pos;
+			let res_pos = solver.get_int_lit(result, LitMeaning::GreaterEq(0));
+			let res_neg = solver.get_int_lit(result, LitMeaning::Less(1));
+
+			// num >= 0 /\ denom > 0 => res >= 0
+			solver.add_clause(vec![!num_pos, !denom_pos, res_pos])?;
+			// num <= 0 /\ denom < 0 => res >= 0
+			solver.add_clause(vec![!num_neg, !denom_neg, res_pos])?;
+			// num >= 0 /\ denom < 0 => res < 0
+			solver.add_clause(vec![!num_pos, !denom_neg, res_neg])?;
+			// num < 0 /\ denom >= 0 => res < 0
+			solver.add_clause(vec![!num_neg, !denom_pos, res_neg])?;
 		}
+
+		Ok(())
 	}
 
 	/// Propagate the result and numerator lower bounds, and the denominator
@@ -212,52 +231,6 @@ where
 	}
 }
 
-impl Poster for IntDivBoundsPoster {
-	fn post<I: InitializationActions + ?Sized>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		// Subscribe to bounds changes on each of the variables.
-		actions.enqueue_on_int_change(self.numerator, IntPropCond::Bounds);
-		actions.enqueue_on_int_change(self.denominator, IntPropCond::Bounds);
-		actions.enqueue_on_int_change(self.result, IntPropCond::Bounds);
-
-		// Ensure the consistency of the signs of the three variables using the following clauses.
-		if actions.get_int_lower_bound(self.numerator) < 0
-			|| actions.get_int_lower_bound(self.denominator) < 0
-			|| actions.get_int_lower_bound(self.result) < 0
-		{
-			let num_pos = actions.get_int_lit(self.numerator, LitMeaning::GreaterEq(0));
-			let num_neg = actions.get_int_lit(self.numerator, LitMeaning::Less(1));
-			let denom_pos = actions.get_int_lit(self.denominator, LitMeaning::GreaterEq(0));
-			let denom_neg = !denom_pos;
-			let res_pos = actions.get_int_lit(self.result, LitMeaning::GreaterEq(0));
-			let res_neg = actions.get_int_lit(self.result, LitMeaning::Less(1));
-
-			// num >= 0 /\ denom > 0 => res >= 0
-			actions.add_clause(vec![!num_pos, !denom_pos, res_pos])?;
-			// num <= 0 /\ denom < 0 => res >= 0
-			actions.add_clause(vec![!num_neg, !denom_neg, res_pos])?;
-			// num >= 0 /\ denom < 0 => res < 0
-			actions.add_clause(vec![!num_pos, !denom_neg, res_neg])?;
-			// num < 0 /\ denom >= 0 => res < 0
-			actions.add_clause(vec![!num_neg, !denom_pos, res_neg])?;
-		}
-
-		Ok((
-			Box::new(IntDivBounds {
-				numerator: self.numerator,
-				denominator: self.denominator,
-				result: self.result,
-			}),
-			QueuePreferences {
-				enqueue_on_post: false,
-				priority: PriorityLevel::Highest,
-			},
-		))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
@@ -266,7 +239,7 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		propagator::int_div::IntDivBounds,
+		constraints::int_div::IntDivBounds,
 		solver::engine::int_var::{EncodingType, IntVar},
 		Solver,
 	};
@@ -294,7 +267,8 @@ mod tests {
 			EncodingType::Lazy,
 		);
 
-		slv.add_propagator(IntDivBounds::prepare(a, b, c)).unwrap();
+		IntDivBounds::new_in(&mut slv, a, b, c).unwrap();
+
 		slv.expect_solutions(
 			&[a, b, c],
 			expect![[r#"

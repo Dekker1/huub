@@ -200,7 +200,7 @@ impl<'a, V> LitNames<'a, V> {
 	}
 }
 
-impl<'a, V: Visit> LitNames<'a, V> {
+impl<V: Visit> LitNames<'_, V> {
 	#[inline]
 	/// Check if the field should and can be formatted as a clause or a list of
 	/// literals.
@@ -277,7 +277,7 @@ impl<'a, V: Visit> LitNames<'a, V> {
 	}
 }
 
-impl<'a, V: Visit> Visit for LitNames<'a, V> {
+impl<V: Visit> Visit for LitNames<'_, V> {
 	#[inline]
 	fn record_bool(&mut self, field: &Field, value: bool) {
 		self.inner.record_bool(field, value);

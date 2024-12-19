@@ -9,11 +9,11 @@
 //! during the search process, without having to encode the full problem into
 //! Boolean variables and clauses.
 
-pub(crate) mod actions;
-pub(crate) mod brancher;
+pub mod actions;
+pub mod branchers;
+pub mod constraints;
 pub(crate) mod helpers;
 pub(crate) mod model;
-pub(crate) mod propagator;
 pub(crate) mod solver;
 #[cfg(test)]
 pub(crate) mod tests;

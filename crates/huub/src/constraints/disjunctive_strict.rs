@@ -6,28 +6,19 @@ use pindakaas::Lit as RawLit;
 use tracing::trace;
 
 use crate::{
-	actions::{ExplanationActions, InitializationActions, InspectionActions},
-	propagator::{Conflict, PropagationActions, Propagator, ReasonBuilder},
+	actions::{ExplanationActions, InspectionActions, PropagatorInitActions},
+	constraints::{Conflict, PropagationActions, Propagator, ReasonBuilder},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
 		view::{BoolViewInner, IntView},
 	},
-	Conjunction, LitMeaning, ReformulationError,
+	Conjunction, LitMeaning,
 };
-
-/// [`Poster`] for the [`DisjunctiveStrictEdgeFinding`] propagator.
-struct DisjunctiveEdgeFindingPoster {
-	/// Start times of the tasks
-	start_times: Vec<IntView>,
-	/// Durations of the tasks
-	durations: Vec<i64>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// A propagator for the `disjunctive` constraint using the Strict Edge Finding
 /// algorithm.
-pub(crate) struct DisjunctiveStrictEdgeFinding {
+pub struct DisjunctiveStrictEdgeFinding {
 	/// Start time variables of each task.
 	start_times: Vec<IntView>,
 	/// Durations of each task.
@@ -82,41 +73,6 @@ struct TaskInfo {
 	earliest_start: TrailedInt,
 	/// Latest completion time of the task.
 	latest_completion: TrailedInt,
-}
-
-impl Poster for DisjunctiveEdgeFindingPoster {
-	fn post<I: InitializationActions>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		let n = self.start_times.len();
-		let prop = DisjunctiveStrictEdgeFinding {
-			start_times: self.start_times,
-			durations: self.durations,
-			tasks_sorted_earliest_start: (0..n).collect(),
-			tasks_sorted_lastest_completion: (0..n).collect(),
-			task_rankings_by_earliest_start: (0..n).collect(),
-			ot_tree: OmegaThetaTree::new(n),
-			trailed_info: (0..n)
-				.map(|_| TaskInfo {
-					earliest_start: actions.new_trailed_int(0),
-					latest_completion: actions.new_trailed_int(0),
-				})
-				.collect(),
-		};
-
-		for &v in prop.start_times.iter() {
-			actions.enqueue_on_int_change(v, IntPropCond::Bounds);
-		}
-
-		Ok((
-			Box::new(prop),
-			QueuePreferences {
-				enqueue_on_post: true,
-				priority: PriorityLevel::Low,
-			},
-		))
-	}
 }
 
 impl DisjunctiveStrictEdgeFinding {
@@ -178,15 +134,36 @@ impl DisjunctiveStrictEdgeFinding {
 	fn latest_completion_time<I: InspectionActions>(&self, i: usize, actions: &mut I) -> i32 {
 		actions.get_int_upper_bound(self.start_times[i]) as i32 + self.durations[i] as i32
 	}
-	/// Prepare a [`DisjunctiveStrictEdgeFinding`] to be posted to the solver.
-	pub(crate) fn prepare<V: Into<IntView>, I: IntoIterator<Item = V>>(
-		start_times: I,
+
+	/// Create a new [`DisjunctiveStrictEdgeFinding`] propagator and post it in
+	/// the solver.
+	pub fn new_in(
+		solver: &mut impl PropagatorInitActions,
+		start_times: Vec<IntView>,
 		durations: Vec<i64>,
-	) -> impl Poster {
-		let start_times: Vec<IntView> = start_times.into_iter().map(Into::into).collect();
-		DisjunctiveEdgeFindingPoster {
-			start_times,
-			durations,
+	) {
+		let n = start_times.len();
+		let trailed_info = (0..n)
+			.map(|_| TaskInfo {
+				earliest_start: solver.new_trailed_int(0),
+				latest_completion: solver.new_trailed_int(0),
+			})
+			.collect();
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				start_times: start_times.clone(),
+				durations,
+				tasks_sorted_earliest_start: (0..n).collect(),
+				tasks_sorted_lastest_completion: (0..n).collect(),
+				task_rankings_by_earliest_start: (0..n).collect(),
+				ot_tree: OmegaThetaTree::new(n),
+				trailed_info,
+			}),
+			PriorityLevel::Low,
+		);
+
+		for v in start_times {
+			solver.enqueue_on_int_change(prop, v, IntPropCond::Bounds);
 		}
 	}
 }
@@ -593,7 +570,7 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		propagator::disjunctive_strict::DisjunctiveStrictEdgeFinding,
+		constraints::disjunctive_strict::DisjunctiveStrictEdgeFinding,
 		solver::engine::int_var::{EncodingType, IntVar},
 		Solver,
 	};
@@ -620,20 +597,18 @@ mod tests {
 			EncodingType::Eager,
 			EncodingType::Lazy,
 		);
+
 		let durations = vec![2, 3, 1];
-		slv.add_propagator(DisjunctiveStrictEdgeFinding::prepare(
-			[a, b, c],
-			durations.clone(),
-		))
-		.unwrap();
-		slv.add_propagator(DisjunctiveStrictEdgeFinding::prepare(
+		DisjunctiveStrictEdgeFinding::new_in(&mut slv, vec![a, b, c], durations.clone());
+		DisjunctiveStrictEdgeFinding::new_in(
+			&mut slv,
 			[a, b, c]
 				.iter()
 				.zip(durations.iter())
-				.map(|(v, d)| -*v + (7 - d)),
+				.map(|(v, d)| -*v + (7 - d))
+				.collect(),
 			durations.clone(),
-		))
-		.unwrap();
+		);
 
 		slv.expect_solutions(
 			&[a, b, c],

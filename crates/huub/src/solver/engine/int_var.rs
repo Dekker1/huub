@@ -112,7 +112,7 @@ pub(crate) struct LazyOrderStorage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-/// The meaning of a literal in the context of a [`IntVar`] `x`.
+/// The meaning of a literal in the context of a integer decision variable `x`.
 pub enum LitMeaning {
 	/// Literal representing the condition `x = i`.
 	Eq(IntVal),
@@ -440,8 +440,7 @@ impl IntVar {
 		match &self.order_encoding {
 			OrderStorage::Eager { storage, .. } => {
 				let (_, offset, _) = OrderStorage::resolve_val(&self.domain, v);
-				let bv = BoolView(BoolViewInner::Lit(!storage.index(offset)));
-				(bv, v)
+				((!storage.index(offset)).into(), v)
 			}
 			OrderStorage::Lazy(storage) => {
 				let mut ret = (BoolView(BoolViewInner::Const(true)), v);
@@ -453,7 +452,7 @@ impl IntVar {
 				};
 				while storage.storage[index].val >= v {
 					let node = &storage.storage[index];
-					let lit = BoolView(BoolViewInner::Lit(!node.var));
+					let lit = (!node.var).into();
 					if let Some(v) = trail.get_bool_val(lit) {
 						debug_assert!(v);
 						ret = (lit, node.val);
@@ -485,8 +484,7 @@ impl IntVar {
 		match &self.order_encoding {
 			OrderStorage::Eager { storage, .. } => {
 				let (_, offset, _) = OrderStorage::resolve_val(&self.domain, v);
-				let bv = BoolView(BoolViewInner::Lit(storage.index(offset).into()));
-				(bv, v)
+				(storage.index(offset).into(), v)
 			}
 			OrderStorage::Lazy(storage) => {
 				let mut ret = (BoolView(BoolViewInner::Const(true)), v);
@@ -498,7 +496,7 @@ impl IntVar {
 				};
 				while storage.storage[index].val <= v {
 					let node = &storage.storage[index];
-					let lit = BoolView(BoolViewInner::Lit(node.var.into()));
+					let lit = node.var.into();
 					if let Some(v) = trail.get_bool_val(lit) {
 						debug_assert!(v);
 						ret = (lit, node.val);

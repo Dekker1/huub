@@ -3,33 +3,20 @@
 //! variable.
 
 use crate::{
-	actions::{ExplanationActions, InitializationActions},
-	propagator::{CachedReason, Conflict, PropagationActions, Propagator},
-	solver::{
-		engine::{activation_list::IntPropCond, queue::PriorityLevel},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
-	},
+	actions::{ExplanationActions, PropagatorInitActions},
+	constraints::{CachedReason, Conflict, PropagationActions, Propagator},
+	solver::engine::{activation_list::IntPropCond, queue::PriorityLevel},
 	IntVal, IntView, LitMeaning, ReformulationError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Bounds propagator for the constraint `result = base^exponent`.
-pub(crate) struct IntPowBounds {
+pub struct IntPowBounds {
 	/// The base in the exponentiation
 	base: IntView,
 	/// The exponent in the exponentiation
 	exponent: IntView,
 	/// The result of exponentiation
-	result: IntView,
-}
-
-/// [`Poster`] for [`IntPowBounds`].
-struct IntPowBoundsPoster {
-	/// The variable representing the base.
-	base: IntView,
-	/// The variable representing the exponent.
-	exponent: IntView,
-	/// The variable representing the result.
 	result: IntView,
 }
 
@@ -57,13 +44,50 @@ fn pow(base: IntVal, exponent: IntVal) -> Option<IntVal> {
 }
 
 impl IntPowBounds {
-	/// Prepare a new [`IntPowBounds`] propagator to be posted to the solver.
-	pub(crate) fn prepare(base: IntView, exponent: IntView, result: IntView) -> impl Poster {
-		IntPowBoundsPoster {
-			base,
-			exponent,
-			result,
+	/// Create a new [`IntPowBounds`] propagator and post it in the solver.
+	pub fn new_in(
+		solver: &mut impl PropagatorInitActions,
+		base: IntView,
+		exponent: IntView,
+		result: IntView,
+	) -> Result<(), ReformulationError> {
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				base,
+				exponent,
+				result,
+			}),
+			PriorityLevel::Highest,
+		);
+
+		// Subscribe to bounds changes for each of the variables
+		solver.enqueue_on_int_change(prop, base, IntPropCond::Bounds);
+		solver.enqueue_on_int_change(prop, exponent, IntPropCond::Bounds);
+		solver.enqueue_on_int_change(prop, result, IntPropCond::Bounds);
+
+		// Ensure that if the base is negative, then the exponent cannot be zero
+		let (exp_lb, exp_ub) = solver.get_int_bounds(exponent);
+		let (base_lb, base_ub) = solver.get_int_bounds(base);
+		if exp_lb < 0 || (base_lb..=base_ub).contains(&0) {
+			// (exp < 0) -> (base != 0)
+			let clause = vec![
+				solver.get_int_lit(exponent, LitMeaning::GreaterEq(0)),
+				solver.get_int_lit(base, LitMeaning::NotEq(0)),
+			];
+			solver.add_clause(clause)?;
 		}
+
+		// Ensure that if the exponent is zero, then the result is one
+		if (exp_lb..=exp_ub).contains(&0) {
+			// (exp == 0) -> (res == 1)
+			let clause = vec![
+				solver.get_int_lit(exponent, LitMeaning::NotEq(0)),
+				solver.get_int_lit(result, LitMeaning::Eq(1)),
+			];
+			solver.add_clause(clause)?;
+		}
+
+		Ok(())
 	}
 
 	/// Propagates the bounds of the base and exponent to the result.
@@ -283,52 +307,6 @@ where
 	}
 }
 
-impl Poster for IntPowBoundsPoster {
-	fn post<I: InitializationActions + ?Sized>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		// Subscribe to bounds changes for each of the variables
-		actions.enqueue_on_int_change(self.base, IntPropCond::Bounds);
-		actions.enqueue_on_int_change(self.exponent, IntPropCond::Bounds);
-		actions.enqueue_on_int_change(self.result, IntPropCond::Bounds);
-
-		// Ensure that if the base is negative, then the exponent cannot be zero
-		let (exp_lb, exp_ub) = actions.get_int_bounds(self.exponent);
-		let (base_lb, base_ub) = actions.get_int_bounds(self.base);
-		if exp_lb < 0 || (base_lb..=base_ub).contains(&0) {
-			// (exp < 0) -> (base != 0)
-			let clause = vec![
-				actions.get_int_lit(self.exponent, LitMeaning::GreaterEq(0)),
-				actions.get_int_lit(self.base, LitMeaning::NotEq(0)),
-			];
-			actions.add_clause(clause)?;
-		}
-
-		// Ensure that if the exponent is zero, then the result is one
-		if (exp_lb..=exp_ub).contains(&0) {
-			// (exp == 0) -> (res == 1)
-			let clause = vec![
-				actions.get_int_lit(self.exponent, LitMeaning::NotEq(0)),
-				actions.get_int_lit(self.result, LitMeaning::Eq(1)),
-			];
-			actions.add_clause(clause)?;
-		}
-
-		Ok((
-			Box::new(IntPowBounds {
-				base: self.base,
-				exponent: self.exponent,
-				result: self.result,
-			}),
-			QueuePreferences {
-				enqueue_on_post: false,
-				priority: PriorityLevel::Highest,
-			},
-		))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
@@ -336,7 +314,7 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		propagator::int_pow::IntPowBounds,
+		constraints::int_pow::IntPowBounds,
 		solver::engine::int_var::{EncodingType, IntVar},
 		Solver,
 	};
@@ -364,7 +342,8 @@ mod tests {
 			EncodingType::Eager,
 		);
 
-		slv.add_propagator(IntPowBounds::prepare(a, b, c)).unwrap();
+		IntPowBounds::new_in(&mut slv, a, b, c)
+			.expect("int_pow(a,b,c) was found to be unsatisfiable");
 		slv.expect_solutions(
 			&[a, b, c],
 			expect![[r#"

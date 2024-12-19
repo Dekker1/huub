@@ -21,7 +21,7 @@ use crate::{
 
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
 /// Configuration object for the reformulation process of creating a [`Solver`]
-/// object from a [`Model`].
+/// object from a [`crate::Model`].
 pub struct InitConfig {
 	/// The maximum cardinality of the domain of an integer variable before its
 	/// order encoding is created lazily.
@@ -33,11 +33,12 @@ pub struct InitConfig {
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
-/// Error type used during the reformulation process of creating a [`Solver`]
-/// object from a [`Model`].
+/// Error type used during the reformulation process of creating a [`Solver`],
+/// e.g. when creating a [`Solver`] from a [`crate::Model`].
 pub enum ReformulationError {
-	#[error("The expression is trivially unsatisfiable")]
-	/// Error used when the [`Model`] is found to be trivially unsatisfiable.
+	#[error("The problem is trivially unsatisfiable")]
+	/// Error used when the problem is found to be unsatisfiable without requiring
+	/// any search.
 	TrivialUnsatisfiable,
 }
 

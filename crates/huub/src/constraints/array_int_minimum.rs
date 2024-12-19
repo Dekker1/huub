@@ -4,28 +4,19 @@
 use itertools::Itertools;
 
 use crate::{
-	actions::{ExplanationActions, InitializationActions},
-	propagator::{Conflict, PropagationActions, Propagator},
+	actions::{ExplanationActions, PropagatorInitActions},
+	constraints::{Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
 		value::IntVal,
 		view::IntView,
 	},
-	LitMeaning, ReformulationError,
+	LitMeaning,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Bounds cosistent propagator for the `array_int_minimum` constraint.
-pub(crate) struct ArrayIntMinimumBounds {
-	/// Set of variable from which the mimimum must be taken
-	vars: Vec<IntView>,
-	/// Variable that represents the minimum value
-	min: IntView,
-}
-
-/// [`Poster`] for the [`ArrayIntMinimumBounds`] propagator.
-struct ArrayIntMinimumBoundsPoster {
+pub struct ArrayIntMinimumBounds {
 	/// Set of variable from which the mimimum must be taken
 	vars: Vec<IntView>,
 	/// Variable that represents the minimum value
@@ -33,16 +24,21 @@ struct ArrayIntMinimumBoundsPoster {
 }
 
 impl ArrayIntMinimumBounds {
-	/// Prepare a new [`ArrayIntMinimumBounds`] propagator to be posted to the
+	/// Create a new [`ArrayIntMinimumBounds`] propagator and post it in the
 	/// solver.
-	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
-		vars: VI,
-		min: IntView,
-	) -> impl Poster {
-		ArrayIntMinimumBoundsPoster {
-			vars: vars.into_iter().map(Into::into).collect(),
-			min,
+	pub fn new_in(solver: &mut impl PropagatorInitActions, vars: Vec<IntView>, min: IntView) {
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				vars: vars.clone(),
+				min,
+			}),
+			PriorityLevel::Low,
+		);
+		for v in vars {
+			solver.enqueue_on_int_change(prop, v, IntPropCond::Bounds);
 		}
+		solver.enqueue_on_int_change(prop, min, IntPropCond::LowerBound);
+		solver.enqueue_now(prop);
 	}
 }
 
@@ -90,29 +86,6 @@ where
 		}
 
 		Ok(())
-	}
-}
-
-impl Poster for ArrayIntMinimumBoundsPoster {
-	fn post<I: InitializationActions>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		let prop = ArrayIntMinimumBounds {
-			vars: self.vars,
-			min: self.min,
-		};
-		for &v in prop.vars.iter() {
-			actions.enqueue_on_int_change(v, IntPropCond::Bounds);
-		}
-		actions.enqueue_on_int_change(prop.min, IntPropCond::LowerBound);
-		Ok((
-			Box::new(prop),
-			QueuePreferences {
-				enqueue_on_post: true,
-				priority: PriorityLevel::Low,
-			},
-		))
 	}
 }
 

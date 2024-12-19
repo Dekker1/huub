@@ -5,11 +5,10 @@
 use itertools::Itertools;
 
 use crate::{
-	actions::{ExplanationActions, InitializationActions},
-	propagator::{Conflict, PropagationActions, Propagator},
+	actions::{ExplanationActions, PropagatorInitActions},
+	constraints::{Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
 		value::IntVal,
 		view::IntView,
 	},
@@ -18,7 +17,7 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Bounds consistent propagator for the `array_var_int_element` constraint.
-pub(crate) struct ArrayVarIntElementBounds {
+pub struct ArrayVarIntElementBounds {
 	/// Array of variables from which the element is selected
 	vars: Vec<IntView>,
 	/// Variable that represent the result of the selection
@@ -31,29 +30,64 @@ pub(crate) struct ArrayVarIntElementBounds {
 	max_support: TrailedInt,
 }
 
-/// [`Poster`] for the [`ArrayVarIntElementBounds`] propagator.
-struct ArrayVarIntElementBoundsPoster {
-	/// The variable representing the index
-	index: IntView,
-	/// The result variable
-	result: IntView,
-	/// The array of variables
-	vars: Vec<IntView>,
-}
-
 impl ArrayVarIntElementBounds {
-	/// Prepare a new [`ArrayVarIntElementBounds`] propagator to be posted to the
+	/// Create a new [`ArrayVarIntElementBounds`] propagator and post it in the
 	/// solver.
-	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
-		vars: VI,
+	pub fn new_in(
+		solver: &mut impl PropagatorInitActions,
+		collection: Vec<IntView>,
 		result: IntView,
 		index: IntView,
-	) -> impl Poster {
-		ArrayVarIntElementBoundsPoster {
-			vars: vars.into_iter().map(Into::into).collect(),
-			result,
-			index,
+	) -> Result<(), ReformulationError> {
+		// Remove out-of-bound values from the index variables
+		let index_ub = solver.get_int_lit(index, LitMeaning::Less(collection.len() as IntVal));
+		let index_lb = solver.get_int_lit(index, LitMeaning::GreaterEq(0));
+		solver.add_clause(vec![index_ub])?;
+		solver.add_clause(vec![index_lb])?;
+
+		// Initialize the min_support and max_support variables
+		let mut min_support = -1;
+		let mut max_support = -1;
+		let mut min_lb = IntVal::MAX;
+		let mut max_ub = IntVal::MIN;
+		for (i, v) in collection.iter().enumerate() {
+			if solver.check_int_in_domain(index, i as IntVal) {
+				let (lb, ub) = solver.get_int_bounds(*v);
+				if min_support == -1 || lb < min_lb {
+					min_support = i as IntVal;
+					min_lb = solver.get_int_lower_bound(*v);
+				}
+				if max_support == -1 || ub > max_ub {
+					max_support = i as IntVal;
+					max_ub = ub;
+				}
+			}
 		}
+		let min_support = solver.new_trailed_int(min_support);
+		let max_support = solver.new_trailed_int(max_support);
+
+		// Post the propagator
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				vars: collection.clone(),
+				result,
+				index,
+				min_support,
+				max_support,
+			}),
+			PriorityLevel::Low,
+		);
+
+		// Subscribe to changes of the involved variables
+		solver.enqueue_on_int_change(prop, result, IntPropCond::Bounds);
+		solver.enqueue_on_int_change(prop, index, IntPropCond::Domain);
+		for (i, v) in collection.iter().enumerate() {
+			if solver.check_int_in_domain(index, i as IntVal) {
+				solver.enqueue_on_int_change(prop, *v, IntPropCond::Bounds);
+			}
+		}
+
+		Ok(())
 	}
 }
 
@@ -203,56 +237,6 @@ where
 	}
 }
 
-impl Poster for ArrayVarIntElementBoundsPoster {
-	fn post<I: InitializationActions>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		// remove out-of-bound values from the index variables
-		let index_ub = actions.get_int_lit(self.index, LitMeaning::Less(self.vars.len() as IntVal));
-		let index_lb = actions.get_int_lit(self.index, LitMeaning::GreaterEq(0));
-		actions.add_clause(vec![index_ub])?;
-		actions.add_clause(vec![index_lb])?;
-
-		// initialize the min_support and max_support variables
-		let mut min_support = -1;
-		let mut max_support = -1;
-		let mut min_lb = IntVal::MAX;
-		let mut max_ub = IntVal::MIN;
-		for (i, v) in self.vars.iter().enumerate() {
-			if actions.check_int_in_domain(self.index, i as IntVal) {
-				actions.enqueue_on_int_change(*v, IntPropCond::Bounds);
-				let (lb, ub) = actions.get_int_bounds(*v);
-				if min_support == -1 || lb < min_lb {
-					min_support = i as IntVal;
-					min_lb = actions.get_int_lower_bound(*v);
-				}
-				if max_support == -1 || ub > max_ub {
-					max_support = i as IntVal;
-					max_ub = ub;
-				}
-			}
-		}
-
-		let prop = ArrayVarIntElementBounds {
-			vars: self.vars.into_iter().map(Into::into).collect(),
-			result: self.result,
-			index: self.index,
-			min_support: actions.new_trailed_int(min_support),
-			max_support: actions.new_trailed_int(max_support),
-		};
-		actions.enqueue_on_int_change(prop.result, IntPropCond::Bounds);
-		actions.enqueue_on_int_change(prop.index, IntPropCond::Domain);
-		Ok((
-			Box::new(prop),
-			QueuePreferences {
-				enqueue_on_post: false,
-				priority: PriorityLevel::Low,
-			},
-		))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
@@ -261,7 +245,7 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		propagator::array_var_int_element::ArrayVarIntElementBounds,
+		constraints::array_var_int_element::ArrayVarIntElementBounds,
 		solver::engine::int_var::{EncodingType, IntVar},
 		Constraint, Model, Solver,
 	};
@@ -301,8 +285,8 @@ mod tests {
 			EncodingType::Lazy,
 		);
 
-		slv.add_propagator(ArrayVarIntElementBounds::prepare(vec![a, b, c], y, index))
-			.unwrap();
+		ArrayVarIntElementBounds::new_in(&mut slv, vec![a, b, c], y, index).unwrap();
+
 		slv.expect_solutions(
 			&[index, y, a, b, c],
 			expect![[r#"
@@ -354,8 +338,8 @@ mod tests {
 			EncodingType::Lazy,
 		);
 
-		slv.add_propagator(ArrayVarIntElementBounds::prepare(vec![a, b], y, index))
-			.unwrap();
+		ArrayVarIntElementBounds::new_in(&mut slv, vec![a, b], y, index).unwrap();
+
 		slv.expect_solutions(
 			&[index, y, a, b],
 			expect![[r#"

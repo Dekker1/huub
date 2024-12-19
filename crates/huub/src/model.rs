@@ -104,9 +104,10 @@ impl Model {
 	/// solve it.
 	///
 	/// This method will return a [`Solver`] instance in addition to a
-	/// [`VariableMap`], which can be used to map from [`ModelView`] to
-	/// [`SolverView`]. If an error occurs during the reformulation process, or if
-	/// it is found to be trivially unsatisfiable, then an error will be returned.
+	/// [`VariableMap`], which can be used to map from [`ModelView`]
+	/// to [`crate::SolverView`]. If an error occurs during the reformulation
+	/// process, or if it is found to be trivially unsatisfiable, then an error
+	/// will be returned.
 	pub fn to_solver<Oracle: PropagatingSolver<Engine>>(
 		&mut self,
 		config: &InitConfig,

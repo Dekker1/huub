@@ -1,8 +1,6 @@
 //! Module containing the central solving infrastructure.
 
 pub(crate) mod engine;
-pub(crate) mod initialization_context;
-pub(crate) mod poster;
 pub(crate) mod value;
 pub(crate) mod view;
 
@@ -18,20 +16,22 @@ use pindakaas::{
 	},
 	Cnf, Lit as RawLit, Valuation as SatValuation,
 };
-use poster::BrancherPoster;
 use tracing::{debug, trace};
 
 use crate::{
-	actions::{DecisionActions, ExplanationActions, InspectionActions, TrailingActions},
+	actions::{
+		BrancherInitActions, DecisionActions, ExplanationActions, InspectionActions,
+		PropagatorInitActions, TrailingActions,
+	},
 	solver::{
 		engine::{
+			activation_list::IntPropCond,
 			int_var::{IntVarRef, LazyLitDef, OrderStorage},
+			queue::PriorityLevel,
 			trace_new_lit,
 			trail::TrailedInt,
-			Engine, PropRef, SearchStatistics,
+			BoxedBrancher, BoxedPropagator, Engine, PropRef, SearchStatistics,
 		},
-		initialization_context::{InitRef, InitializationContext},
-		poster::Poster,
 		value::{AssumptionChecker, NoAssumptions, Valuation, Value},
 		view::{BoolViewInner, IntView, IntViewInner, SolverView},
 	},
@@ -166,25 +166,6 @@ where
 }
 
 impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
-	/// Add a brancher to the solver.
-	///
-	/// This method is called as part of the reformulation process of
-	/// [`crate::Model`] to [`Solver`]. This method accepts a [`BrancherPoster`]
-	/// implementation that is used to finalize the brancher and subscribe it to
-	/// any relevant variables.
-	///
-	/// Note that during the search process the branchers will be asked for
-	/// decisions in the order they were added to the solver.
-	pub(crate) fn add_brancher<P: BrancherPoster>(&mut self, poster: P) {
-		let mut actions = InitializationContext {
-			slv: self,
-			init_ref: InitRef::Brancher,
-		};
-		let brancher = poster.post(&mut actions);
-		self.engine_mut().branchers.push(brancher);
-	}
-
-	#[doc(hidden)]
 	/// Add a clause to the solver
 	pub fn add_clause<I: IntoIterator<Item = BoolView>>(
 		&mut self,
@@ -233,39 +214,6 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 			.collect_vec();
 		debug!(clause = ?clause.iter().filter_map(|&x| if let BoolView(BoolViewInner::Lit(x)) = x { Some(i32::from(x)) } else { None }).collect::<Vec<i32>>(), "add solution nogood");
 		self.add_clause(clause)
-	}
-
-	/// Add a propagator to the solver.
-	///
-	/// This method is called as part of the reformulation process of
-	/// [`crate::Model`] to [`Solver`]. This method accepts a [`Poster`]
-	/// implementation that is used to finalize the propagator and subscribe it to
-	/// any relevant variables.
-	pub(crate) fn add_propagator<P: Poster>(
-		&mut self,
-		poster: P,
-	) -> Result<(), ReformulationError> {
-		let prop_ref = PropRef::from(self.engine().propagators.len());
-		let mut actions = InitializationContext {
-			slv: self,
-			init_ref: InitRef::Propagator(prop_ref),
-		};
-		let (prop, queue_pref) = poster.post(&mut actions)?;
-		let p = self.engine_mut().propagators.push(prop);
-		debug_assert_eq!(prop_ref, p);
-		let engine = self.engine_mut();
-		let p = engine.state.propagator_priority.push(queue_pref.priority);
-		debug_assert_eq!(prop_ref, p);
-		let p = self.engine_mut().state.enqueued.push(false);
-		debug_assert_eq!(prop_ref, p);
-		if queue_pref.enqueue_on_post {
-			let state = &mut self.engine_mut().state;
-			state
-				.propagator_queue
-				.insert(state.propagator_priority[prop_ref], prop_ref);
-			state.enqueued[prop_ref] = true;
-		}
-		Ok(())
 	}
 
 	/// Find all solutions with regard to a list of given variables.
@@ -529,6 +477,30 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 	}
 }
 
+impl<Oracle: PropagatingSolver<Engine>> BrancherInitActions for Solver<Oracle> {
+	fn ensure_decidable(&mut self, view: SolverView) {
+		match view {
+			SolverView::Bool(BoolView(BoolViewInner::Lit(lit)))
+			| SolverView::Int(IntView(IntViewInner::Bool { lit, .. })) => {
+				self.engine_mut().state.trail.grow_to_boolvar(lit.var());
+				self.oracle.add_observed_var(lit.var());
+			}
+			_ => {
+				// Nothing has to happend for constants and all literals for integer
+				// variables are already marked as observed.
+			}
+		}
+	}
+
+	fn new_trailed_int(&mut self, init: IntVal) -> TrailedInt {
+		<Self as PropagatorInitActions>::new_trailed_int(self, init)
+	}
+
+	fn push_brancher(&mut self, brancher: BoxedBrancher) {
+		self.engine_mut().branchers.push(brancher);
+	}
+}
+
 impl<Oracle: PropagatingSolver<Engine>> DecisionActions for Solver<Oracle> {
 	fn get_intref_lit(&mut self, iv: IntVarRef, meaning: LitMeaning) -> BoolView {
 		let mut clauses = Vec::new();
@@ -608,6 +580,76 @@ impl<Oracle: PropagatingSolver<Engine>> InspectionActions for Solver<Oracle> {
 			fn get_int_upper_bound(&self, var: IntView) -> IntVal;
 			fn get_int_val(&self, var: IntView) -> Option<IntVal>;
 		}
+	}
+}
+
+impl<Oracle: PropagatingSolver<Engine>> PropagatorInitActions for Solver<Oracle> {
+	fn add_clause<I: IntoIterator<Item = BoolView>>(
+		&mut self,
+		clause: I,
+	) -> Result<(), ReformulationError> {
+		self.add_clause(clause)
+	}
+
+	fn add_propagator(&mut self, propagator: BoxedPropagator, priority: PriorityLevel) -> PropRef {
+		let engine = self.engine_mut();
+		let prop_ref = engine.propagators.push(propagator);
+		let p = engine.state.propagator_priority.push(priority);
+		debug_assert_eq!(prop_ref, p);
+		let p = self.engine_mut().state.enqueued.push(false);
+		debug_assert_eq!(prop_ref, p);
+		p
+	}
+
+	fn new_trailed_int(&mut self, init: IntVal) -> TrailedInt {
+		self.engine_mut().state.trail.track_int(init)
+	}
+
+	fn enqueue_now(&mut self, prop: PropRef) {
+		let state = &mut self.engine_mut().state;
+		if !state.enqueued[prop] {
+			state
+				.propagator_queue
+				.insert(state.propagator_priority[prop], prop);
+			state.enqueued[prop] = true;
+		}
+	}
+
+	fn enqueue_on_bool_change(&mut self, prop: PropRef, var: BoolView) {
+		match var.0 {
+			BoolViewInner::Lit(lit) => {
+				self.engine_mut().state.trail.grow_to_boolvar(lit.var());
+				self.oracle.add_observed_var(lit.var());
+				self.engine_mut()
+					.state
+					.bool_activation
+					.entry(lit.var())
+					.or_default()
+					.push(prop);
+			}
+			BoolViewInner::Const(_) => {}
+		}
+	}
+
+	fn enqueue_on_int_change(&mut self, prop: PropRef, var: IntView, condition: IntPropCond) {
+		let (var, cond) = match var.0 {
+			IntViewInner::VarRef(var) => (var, condition),
+			IntViewInner::Linear { transformer, var } => {
+				let condition = if transformer.positive_scale() {
+					condition
+				} else {
+					match condition {
+						IntPropCond::LowerBound => IntPropCond::UpperBound,
+						IntPropCond::UpperBound => IntPropCond::LowerBound,
+						_ => condition,
+					}
+				};
+				(var, condition)
+			}
+			IntViewInner::Const(_) => return, // ignore
+			IntViewInner::Bool { lit, .. } => return self.enqueue_on_bool_change(prop, lit.into()),
+		};
+		self.engine_mut().state.int_activation[var].add(prop, cond);
 	}
 }
 

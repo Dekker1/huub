@@ -8,9 +8,7 @@ use rangelist::RangeList;
 
 use crate::{
 	actions::InspectionActions,
-	helpers::{div_ceil, div_floor},
-	model::{bool::BoolView, int::IntView, reformulate::VariableMap},
-	propagator::{
+	constraints::{
 		all_different_int::AllDifferentIntValue,
 		array_int_minimum::ArrayIntMinimumBounds,
 		array_var_int_element::ArrayVarIntElementBounds,
@@ -23,10 +21,9 @@ use crate::{
 		int_times::IntTimesBounds,
 		table_int::encode_table_int_gac,
 	},
-	solver::{
-		engine::Engine,
-		view::{BoolViewInner, IntViewInner},
-	},
+	helpers::{div_ceil, div_floor},
+	model::{bool::BoolView, int::IntView, reformulate::VariableMap},
+	solver::{engine::Engine, view::IntViewInner},
 	BoolExpr, IntSetVal, IntVal, LitMeaning, Model, NonZeroIntVal, ReformulationError, Solver,
 };
 
@@ -137,7 +134,7 @@ impl Constraint {
 		match self {
 			Constraint::AllDifferentInt(v) => {
 				let vars: Vec<_> = v.iter().map(|v| v.to_arg(slv, map)).collect();
-				slv.add_propagator(AllDifferentIntValue::prepare(vars))?;
+				AllDifferentIntValue::new_in(slv, vars);
 				Ok(())
 			}
 			Constraint::ArrayIntElement(arr, idx, y) => {
@@ -169,13 +166,13 @@ impl Constraint {
 			Constraint::ArrayIntMinimum(vars, y) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
 				let y = y.to_arg(slv, map);
-				slv.add_propagator(ArrayIntMinimumBounds::prepare(vars, y))?;
+				ArrayIntMinimumBounds::new_in(slv, vars, y);
 				Ok(())
 			}
 			Constraint::ArrayIntMaximum(vars, y) => {
 				let vars: Vec<_> = vars.iter().map(|v| -v.to_arg(slv, map)).collect();
 				let y = -y.to_arg(slv, map);
-				slv.add_propagator(ArrayIntMinimumBounds::prepare(vars, y))?;
+				ArrayIntMinimumBounds::new_in(slv, vars, y);
 				Ok(())
 			}
 			Constraint::ArrayVarIntElement(vars, idx, y) => {
@@ -183,8 +180,7 @@ impl Constraint {
 				let y = y.to_arg(slv, map);
 				let idx = idx.to_arg(slv, map);
 				// tranform 1-based index into 0-based index array
-				slv.add_propagator(ArrayVarIntElementBounds::prepare(vars, y, idx + (-1)))?;
-				Ok(())
+				ArrayVarIntElementBounds::new_in(slv, vars, y, idx + (-1))
 			}
 			Constraint::ArrayVarBoolElement(vars, idx, y) => {
 				let idx = idx.to_arg(slv, map);
@@ -230,10 +226,7 @@ impl Constraint {
 					})
 					.collect_vec();
 				// Add propagator for lower bound propagation
-				slv.add_propagator(DisjunctiveStrictEdgeFinding::prepare(
-					vars.clone(),
-					durs.clone(),
-				))?;
+				DisjunctiveStrictEdgeFinding::new_in(slv, vars.clone(), durs.clone());
 
 				// Add symmetric propagator for upper bound propagation
 				let horizon = vars
@@ -245,190 +238,94 @@ impl Constraint {
 				let symmetric_vars = vars
 					.iter()
 					.zip(durs.iter())
-					.map(|(v, d)| -*v + (horizon - d));
-				slv.add_propagator(DisjunctiveStrictEdgeFinding::prepare(
-					symmetric_vars,
-					durs.clone(),
-				))?;
+					.map(|(v, d)| -*v + (horizon - d))
+					.collect();
+				DisjunctiveStrictEdgeFinding::new_in(slv, symmetric_vars, durs);
 				Ok(())
 			}
 			Constraint::IntAbs(origin, abs) => {
 				let origin = origin.to_arg(slv, map);
 				let abs = abs.to_arg(slv, map);
-				slv.add_propagator(IntAbsBounds::prepare(origin, abs))?;
+				IntAbsBounds::new_in(slv, origin, abs);
 				Ok(())
 			}
 			Constraint::IntDiv(numerator, denominator, result) => {
 				let numerator = numerator.to_arg(slv, map);
 				let denominator = denominator.to_arg(slv, map);
 				let result = result.to_arg(slv, map);
-				slv.add_propagator(IntDivBounds::prepare(numerator, denominator, result))?;
-				Ok(())
+				IntDivBounds::new_in(slv, numerator, denominator, result)
 			}
 			Constraint::IntLinEq(vars, c) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
 				// coeffs * vars <= c
-				slv.add_propagator(IntLinearLessEqBounds::prepare(vars.clone(), *c))?;
+				IntLinearLessEqBounds::new_in(slv, vars.clone(), *c);
 				// coeffs * vars >= c <=> -coeffs * vars <= -c
-				slv.add_propagator(IntLinearLessEqBounds::prepare(
-					vars.into_iter().map(|v| -v),
-					-c,
-				))?;
+				IntLinearLessEqBounds::new_in(slv, vars.into_iter().map(|v| -v), -c);
 				Ok(())
 			}
 			Constraint::IntLinEqImp(vars, c, r) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
 				let r = r.to_arg(slv, map, None)?;
-				match r.0 {
-					BoolViewInner::Const(true) => {
-						slv.add_propagator(IntLinearLessEqBounds::prepare(vars.clone(), *c))?;
-						slv.add_propagator(IntLinearLessEqBounds::prepare(
-							vars.into_iter().map(|v| -v),
-							-c,
-						))?;
-					}
-					BoolViewInner::Const(false) => {}
-					BoolViewInner::Lit(r) => {
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(vars.clone(), *c, r))?;
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(
-							vars.into_iter().map(|v| -v),
-							-c,
-							r,
-						))?;
-					}
-				}
+				IntLinearLessEqImpBounds::new_in(slv, vars.clone(), *c, r);
+				IntLinearLessEqImpBounds::new_in(slv, vars.into_iter().map(|v| -v), -c, r);
 				Ok(())
 			}
 			Constraint::IntLinEqReif(vars, c, r) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
 				let r = r.to_arg(slv, map, None)?;
-				match r.0 {
-					BoolViewInner::Const(true) => {
-						slv.add_propagator(IntLinearLessEqBounds::prepare(vars.clone(), *c))?;
-						slv.add_propagator(IntLinearLessEqBounds::prepare(
-							vars.into_iter().map(|v| -v),
-							-c,
-						))?;
-					}
-					BoolViewInner::Const(false) => {
-						slv.add_propagator(IntLinearNotEqValue::prepare(vars, *c))?;
-					}
-					BoolViewInner::Lit(r) => {
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(vars.clone(), *c, r))?;
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(
-							vars.iter().map(|v| -(*v)),
-							-c,
-							r,
-						))?;
-						slv.add_propagator(IntLinearNotEqImpValue::prepare(vars, *c, !r))?;
-					}
-				}
+				IntLinearLessEqImpBounds::new_in(slv, vars.clone(), *c, r);
+				IntLinearLessEqImpBounds::new_in(slv, vars.iter().map(|v| -(*v)), -c, r);
+				IntLinearNotEqImpValue::new_in(slv, vars, *c, !r);
 				Ok(())
 			}
 			Constraint::IntLinLessEq(vars, c) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
-				slv.add_propagator(IntLinearLessEqBounds::prepare(vars, *c))?;
+				IntLinearLessEqBounds::new_in(slv, vars, *c);
 				Ok(())
 			}
 			Constraint::IntLinLessEqImp(vars, c, r) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
 				let r = r.to_arg(slv, map, None)?;
-				match r.0 {
-					BoolViewInner::Const(true) => {
-						slv.add_propagator(IntLinearLessEqBounds::prepare(vars, *c))?;
-					}
-					BoolViewInner::Const(false) => {}
-					BoolViewInner::Lit(r) => {
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(vars, *c, r))?;
-					}
-				}
+				IntLinearLessEqImpBounds::new_in(slv, vars, *c, r);
 				Ok(())
 			}
 			Constraint::IntLinLessEqReif(vars, c, r) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
 				let r = r.to_arg(slv, map, None)?;
-				match r.0 {
-					BoolViewInner::Const(true) => {
-						slv.add_propagator(IntLinearLessEqBounds::prepare(vars, *c))?;
-					}
-					BoolViewInner::Const(false) => {
-						slv.add_propagator(IntLinearLessEqBounds::prepare(
-							vars.into_iter().map(|v| -v),
-							-(c + 1),
-						))?;
-					}
-					BoolViewInner::Lit(r) => {
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(vars.clone(), *c, r))?;
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(
-							vars.into_iter().map(|v| -v),
-							-(c + 1),
-							!r,
-						))?;
-					}
-				}
+				IntLinearLessEqImpBounds::new_in(slv, vars.clone(), *c, r);
+				IntLinearLessEqImpBounds::new_in(slv, vars.into_iter().map(|v| -v), -(c + 1), !r);
 				Ok(())
 			}
 			Constraint::IntLinNotEq(vars, c) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
-				slv.add_propagator(IntLinearNotEqValue::prepare(vars, *c))?;
+				IntLinearNotEqValue::new_in(slv, vars, *c);
 				Ok(())
 			}
 			Constraint::IntLinNotEqImp(vars, c, r) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
 				let r = r.to_arg(slv, map, None)?;
-				match r.0 {
-					BoolViewInner::Const(true) => {
-						slv.add_propagator(IntLinearNotEqValue::prepare(vars, *c))?;
-					}
-					BoolViewInner::Const(false) => {}
-					BoolViewInner::Lit(r) => {
-						slv.add_propagator(IntLinearNotEqImpValue::prepare(vars, *c, r))?;
-					}
-				}
+				IntLinearNotEqImpValue::new_in(slv, vars, *c, r);
 				Ok(())
 			}
 			Constraint::IntLinNotEqReif(vars, c, r) => {
 				let vars: Vec<_> = vars.iter().map(|v| v.to_arg(slv, map)).collect();
 				let r = r.to_arg(slv, map, None)?;
-				match r.0 {
-					BoolViewInner::Const(true) => {
-						slv.add_propagator(IntLinearNotEqValue::prepare(vars, *c))?;
-					}
-					BoolViewInner::Const(false) => {
-						slv.add_propagator(IntLinearLessEqBounds::prepare(vars.clone(), *c))?;
-						slv.add_propagator(IntLinearLessEqBounds::prepare(
-							vars.into_iter().map(|v| -v),
-							-c,
-						))?;
-					}
-					BoolViewInner::Lit(r) => {
-						slv.add_propagator(IntLinearNotEqImpValue::prepare(vars.clone(), *c, r))?;
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(
-							vars.clone(),
-							*c,
-							!r,
-						))?;
-						slv.add_propagator(IntLinearLessEqImpBounds::prepare(
-							vars.iter().map(|v| -(*v)),
-							-c,
-							!r,
-						))?;
-					}
-				}
+				IntLinearNotEqImpValue::new_in(slv, vars.clone(), *c, r);
+				IntLinearLessEqImpBounds::new_in(slv, vars.clone(), *c, !r);
+				IntLinearLessEqImpBounds::new_in(slv, vars.iter().map(|v| -(*v)), -c, !r);
 				Ok(())
 			}
 			Constraint::IntPow(base, exponent, res) => {
 				let base = base.to_arg(slv, map);
 				let exponent = exponent.to_arg(slv, map);
 				let result = res.to_arg(slv, map);
-				slv.add_propagator(IntPowBounds::prepare(base, exponent, result))?;
-				Ok(())
+				IntPowBounds::new_in(slv, base, exponent, result)
 			}
 			Constraint::IntTimes(x, y, z) => {
 				let x = x.to_arg(slv, map);
 				let y = y.to_arg(slv, map);
 				let z = z.to_arg(slv, map);
-				slv.add_propagator(IntTimesBounds::prepare(x, y, z))?;
+				IntTimesBounds::new_in(slv, x, y, z);
 				Ok(())
 			}
 			Constraint::PropLogic(exp) => exp.constrain(slv, map),

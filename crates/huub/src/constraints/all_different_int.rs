@@ -2,35 +2,35 @@
 //! list of integer variables each take a different value.
 
 use crate::{
-	actions::{ExplanationActions, InitializationActions},
-	propagator::{Conflict, PropagationActions, Propagator},
+	actions::{ExplanationActions, PropagatorInitActions},
+	constraints::{Conflict, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, int_var::LitMeaning, queue::PriorityLevel},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
 		view::{IntView, IntViewInner},
 	},
-	ReformulationError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Value consistent propagator for the `all_different_int` constraint.
-pub(crate) struct AllDifferentIntValue {
+pub struct AllDifferentIntValue {
 	/// List of integer variables that must take different values.
 	vars: Vec<IntView>,
 }
 
-/// [`Poster`] for [`AllDifferentIntValue`].
-struct AllDifferentIntValuePoster {
-	/// The list of variables that must take different values.
-	vars: Vec<IntView>,
-}
-
 impl AllDifferentIntValue {
-	/// Prepare a new [`AllDifferentIntValue`] propagator to be posted to the
+	/// Create a new [`AllDifferentIntValue`] propagator and post it in the
 	/// solver.
-	pub(crate) fn prepare<V: Into<IntView>, I: IntoIterator<Item = V>>(vars: I) -> impl Poster {
-		let vars: Vec<IntView> = vars.into_iter().map(Into::into).collect();
-		AllDifferentIntValuePoster { vars }
+	pub fn new_in(solver: &mut impl PropagatorInitActions, vars: Vec<IntView>) {
+		let enqueue = vars
+			.iter()
+			.any(|v| matches!(v, IntView(IntViewInner::Const(_))));
+		let prop = solver.add_propagator(Box::new(Self { vars: vars.clone() }), PriorityLevel::Low);
+		for v in vars {
+			solver.enqueue_on_int_change(prop, v, IntPropCond::Fixed);
+		}
+		if enqueue {
+			solver.enqueue_now(prop);
+		}
 	}
 }
 
@@ -56,29 +56,6 @@ where
 	}
 }
 
-impl Poster for AllDifferentIntValuePoster {
-	fn post<I: InitializationActions>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		let enqueue = self
-			.vars
-			.iter()
-			.any(|v| matches!(v, IntView(IntViewInner::Const(_))));
-		let prop = AllDifferentIntValue { vars: self.vars };
-		for &v in prop.vars.iter() {
-			actions.enqueue_on_int_change(v, IntPropCond::Fixed);
-		}
-		Ok((
-			Box::new(prop),
-			QueuePreferences {
-				enqueue_on_post: enqueue,
-				priority: PriorityLevel::Low,
-			},
-		))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use itertools::Itertools;
@@ -87,7 +64,7 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		propagator::all_different_int::AllDifferentIntValue,
+		constraints::all_different_int::AllDifferentIntValue,
 		solver::engine::int_var::{EncodingType, IntVar},
 		IntVal, IntView, SolveResult, Solver,
 	};
@@ -115,8 +92,8 @@ mod tests {
 			EncodingType::Eager,
 		);
 
-		slv.add_propagator(AllDifferentIntValue::prepare(vec![a, b, c]))
-			.unwrap();
+		AllDifferentIntValue::new_in(&mut slv, vec![a, b, c]);
+
 		slv.assert_all_solutions(&[a, b, c], |sol| sol.iter().all_unique());
 	}
 
@@ -143,8 +120,8 @@ mod tests {
 			EncodingType::Eager,
 		);
 
-		slv.add_propagator(AllDifferentIntValue::prepare(vec![a, b, c]))
-			.unwrap();
+		AllDifferentIntValue::new_in(&mut slv, vec![a, b, c]);
+
 		slv.assert_unsatisfiable();
 	}
 
@@ -167,15 +144,16 @@ mod tests {
 					));
 				}
 			}
-			slv.add_propagator(AllDifferentIntValue::prepare(vars.clone()))
-				.unwrap();
+
+			AllDifferentIntValue::new_in(&mut slv, vars.clone());
+
 			all_vars.push(vars);
 		});
 		// add all different propagator for each column
 		for i in 0..9 {
 			let col_vars: Vec<IntView> = (0..9).map(|j| all_vars[j][i]).collect();
-			slv.add_propagator(AllDifferentIntValue::prepare(col_vars))
-				.unwrap();
+
+			AllDifferentIntValue::new_in(&mut slv, col_vars);
 		}
 		// add all different propagator for each 3 by 3 grid
 		for i in 0..3 {
@@ -186,8 +164,8 @@ mod tests {
 						block_vars.push(all_vars[3 * i + x][3 * j + y]);
 					}
 				}
-				slv.add_propagator(AllDifferentIntValue::prepare(block_vars))
-					.unwrap();
+
+				AllDifferentIntValue::new_in(&mut slv, block_vars);
 			}
 		}
 		assert_eq!(

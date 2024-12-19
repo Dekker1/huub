@@ -36,8 +36,8 @@ const FZN_COMPLETE: &str = "==========\n";
 /// The string that is printed after every solution.
 const FZN_SEPERATOR: &str = "----------\n";
 
-/// The string that is printed when the solver has proven that the instance is
-/// unsatisfiable.
+// /// The string that is printed when the solver has proven that the instance is
+// /// unsatisfiable.
 // const FZN_UNSATISFIABLE: &str = "=====UNSATISFIABLE=====\n";
 
 /// A configuration for instances that run in a few milliseconds.

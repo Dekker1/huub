@@ -4,26 +4,15 @@
 use std::iter::once;
 
 use crate::{
-	actions::{ExplanationActions, InitializationActions},
-	propagator::{Conflict, PropagationActions, Propagator},
-	solver::{
-		engine::{activation_list::IntPropCond, queue::PriorityLevel},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
-	},
-	IntView, LitMeaning, ReformulationError,
+	actions::{ExplanationActions, PropagatorInitActions},
+	constraints::{Conflict, PropagationActions, Propagator},
+	solver::engine::{activation_list::IntPropCond, queue::PriorityLevel},
+	IntView, LitMeaning,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Bounds propagator for one integer variable being the absolute value of another
-pub(crate) struct IntAbsBounds {
-	/// The integer variable whose absolute value is being taken
-	origin: IntView,
-	/// The integer variable representing the absolute value
-	abs: IntView,
-}
-
-/// [`Poster`] for [`IntAbsBounds`]
-struct IntAbsBoundsPoster {
+pub struct IntAbsBounds {
 	/// The integer variable whose absolute value is being taken
 	origin: IntView,
 	/// The integer variable representing the absolute value
@@ -31,9 +20,13 @@ struct IntAbsBoundsPoster {
 }
 
 impl IntAbsBounds {
-	/// Prepare a new [`IntAbsBounds`] propagator to be posted to the solver.
-	pub(crate) fn prepare(origin: IntView, abs: IntView) -> impl Poster {
-		IntAbsBoundsPoster { origin, abs }
+	/// Create a new [`IntAbsBounds`] propagator and post it in the solver.
+	pub fn new_in(solver: &mut impl PropagatorInitActions, origin: IntView, abs: IntView) {
+		let prop = solver.add_propagator(Box::new(Self { origin, abs }), PriorityLevel::Highest);
+		// Subscribe to both bounds of the origin variable
+		solver.enqueue_on_int_change(prop, origin, IntPropCond::Bounds);
+		// Subscribe only to the upper bound of the absolute value variable
+		solver.enqueue_on_int_change(prop, abs, IntPropCond::UpperBound);
 	}
 }
 
@@ -91,29 +84,6 @@ where
 	}
 }
 
-impl Poster for IntAbsBoundsPoster {
-	fn post<I: InitializationActions + ?Sized>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		// Subscribe to both bounds of the origin variable
-		actions.enqueue_on_int_change(self.origin, IntPropCond::Bounds);
-		// Subscribe only to the upper bound of the absolute value variable
-		actions.enqueue_on_int_change(self.abs, IntPropCond::UpperBound);
-
-		Ok((
-			Box::new(IntAbsBounds {
-				origin: self.origin,
-				abs: self.abs,
-			}),
-			QueuePreferences {
-				enqueue_on_post: false,
-				priority: PriorityLevel::Highest,
-			},
-		))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
@@ -122,7 +92,7 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		propagator::int_abs::IntAbsBounds,
+		constraints::int_abs::IntAbsBounds,
 		solver::engine::int_var::{EncodingType, IntVar},
 		Solver,
 	};
@@ -143,7 +113,9 @@ mod tests {
 			EncodingType::Eager,
 			EncodingType::Lazy,
 		);
-		slv.add_propagator(IntAbsBounds::prepare(a, b)).unwrap();
+
+		IntAbsBounds::new_in(&mut slv, a, b);
+
 		slv.expect_solutions(
 			&[a, b],
 			expect![[r#"

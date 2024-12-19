@@ -113,7 +113,7 @@ impl Not for BoolView {
 
 	fn not(self) -> Self::Output {
 		match self.0 {
-			BoolViewInner::Lit(l) => BoolView(BoolViewInner::Lit(!l)),
+			BoolViewInner::Lit(l) => (!l).into(),
 			BoolViewInner::Const(b) => BoolView(BoolViewInner::Const(!b)),
 		}
 	}
@@ -123,7 +123,7 @@ impl Not for &BoolView {
 
 	fn not(self) -> Self::Output {
 		match self.0 {
-			BoolViewInner::Lit(l) => BoolView(BoolViewInner::Lit(!l)),
+			BoolViewInner::Lit(l) => (!l).into(),
 			BoolViewInner::Const(b) => BoolView(BoolViewInner::Const(!b)),
 		}
 	}

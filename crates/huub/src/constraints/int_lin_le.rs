@@ -6,16 +6,15 @@ use itertools::Itertools;
 use pindakaas::Lit as RawLit;
 
 use crate::{
-	actions::InitializationActions,
+	actions::PropagatorInitActions,
+	constraints::{Conflict, ExplanationActions, PropagationActions, Propagator},
 	helpers::opt_field::OptField,
-	propagator::{Conflict, ExplanationActions, PropagationActions, Propagator},
 	solver::{
 		engine::{activation_list::IntPropCond, queue::PriorityLevel},
-		poster::{BoxedPropagator, Poster, QueuePreferences},
 		value::IntVal,
 		view::{BoolViewInner, IntView, IntViewInner},
 	},
-	BoolView, Conjunction, ReformulationError,
+	BoolView, Conjunction,
 };
 
 /// Type alias for the non-reified version of the [`IntLinearLessEqBoundsImpl`]
@@ -28,7 +27,7 @@ pub(crate) type IntLinearLessEqBounds = IntLinearLessEqBoundsImpl<0>;
 ///
 /// `R` should be `0` if the propagator is not refied, or `1` if it is. Other
 /// values are invalid.
-pub(crate) struct IntLinearLessEqBoundsImpl<const R: usize> {
+pub struct IntLinearLessEqBoundsImpl<const R: usize> {
 	/// Variables that are being summed
 	vars: Vec<IntView>,
 	/// Maximum value of the sum can take
@@ -37,43 +36,41 @@ pub(crate) struct IntLinearLessEqBoundsImpl<const R: usize> {
 	reification: OptField<R, RawLit>,
 }
 
-/// [`Poster`] for a the [`IntLinearLessEqBounds`] or
-/// [`IntLinearLessEqImpBounds`] propagator.
-struct IntLinearLessEqBoundsPoster<const R: usize> {
-	/// Variables that are summed
-	vars: Vec<IntView>,
-	/// Maximum value that the sum of the variables can take
-	max: IntVal,
-	/// Reification variable, if present
-	reification: OptField<R, RawLit>,
-}
-
 /// Type alias for the reified version of the [`IntLinearLessEqBoundsImpl`]
 /// propagator.
 pub(crate) type IntLinearLessEqImpBounds = IntLinearLessEqBoundsImpl<1>;
 
 impl IntLinearLessEqBounds {
-	/// Prepare the [`IntLinearLessEqBounds`] propagator to be posted to the
+	/// Create a new [`IntLinearLessEqBounds`] propagator and post it in the
 	/// solver.
-	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
-		vars: VI,
+	pub fn new_in(
+		solver: &mut impl PropagatorInitActions,
+		vars: impl IntoIterator<Item = IntView>,
 		mut max: IntVal,
-	) -> impl Poster {
-		IntLinearLessEqBoundsPoster::<0> {
-			vars: vars
-				.into_iter()
-				.filter_map(|v| {
-					let v = v.into();
-					if let IntViewInner::Const(c) = v.0 {
-						max -= c;
-						None
-					} else {
-						Some(v)
-					}
-				})
-				.collect(),
-			max,
-			reification: Default::default(),
+	) {
+		let vars: Vec<IntView> = vars
+			.into_iter()
+			.filter(|v| {
+				if let IntViewInner::Const(c) = v.0 {
+					max -= c;
+					false
+				} else {
+					true
+				}
+			})
+			.collect();
+
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				vars: vars.clone(),
+				max,
+				reification: Default::default(),
+			}),
+			PriorityLevel::Low,
+		);
+		solver.enqueue_now(prop);
+		for &v in vars.iter() {
+			solver.enqueue_on_int_change(prop, v, IntPropCond::UpperBound);
 		}
 	}
 }
@@ -109,11 +106,8 @@ where
 	#[tracing::instrument(name = "int_lin_le", level = "trace", skip(self, actions))]
 	fn propagate(&mut self, actions: &mut P) -> Result<(), Conflict> {
 		// If the reified variable is false, skip propagation
-		if let Some(r) = self.reification.get() {
-			if !actions
-				.get_bool_val(BoolView(BoolViewInner::Lit(*r)))
-				.unwrap_or(true)
-			{
+		if let Some(&r) = self.reification.get() {
+			if !actions.get_bool_val(r.into()).unwrap_or(true) {
 				return Ok(());
 			}
 		}
@@ -126,9 +120,9 @@ where
 			.fold(self.max, |sum, val| sum - val);
 
 		// propagate the reified variable if the sum of lower bounds is greater than the right-hand-side value
-		if let Some(r) = self.reification.get() {
+		if let Some(&r) = self.reification.get() {
 			if sum < 0 {
-				actions.set_bool(BoolView(BoolViewInner::Lit(!r)), |a: &mut P| {
+				actions.set_bool((!r).into(), |a: &mut P| {
 					self.vars
 						.iter()
 						.map(|v| a.get_int_lower_bound_lit(*v))
@@ -136,10 +130,7 @@ where
 				})?;
 			}
 			// skip the remaining propagation if the reified variable is not assigned to true
-			if !actions
-				.get_bool_val(BoolView(BoolViewInner::Lit(*r)))
-				.unwrap_or(false)
-			{
+			if !actions.get_bool_val(r.into()).unwrap_or(false) {
 				return Ok(());
 			}
 		}
@@ -154,56 +145,45 @@ where
 	}
 }
 
-impl<const R: usize> Poster for IntLinearLessEqBoundsPoster<R> {
-	fn post<I: InitializationActions>(
-		self,
-		actions: &mut I,
-	) -> Result<(BoxedPropagator, QueuePreferences), ReformulationError> {
-		let prop = IntLinearLessEqBoundsImpl {
-			vars: self.vars,
-			max: self.max,
-			reification: self.reification,
-		};
-		for &v in prop.vars.iter() {
-			actions.enqueue_on_int_change(v, IntPropCond::UpperBound);
-		}
-		if let Some(r) = prop.reification.get() {
-			actions.enqueue_on_bool_change(BoolView(BoolViewInner::Lit(*r)));
-		}
-		Ok((
-			Box::new(prop),
-			QueuePreferences {
-				enqueue_on_post: true,
-				priority: PriorityLevel::Low,
-			},
-		))
-	}
-}
-
 impl IntLinearLessEqImpBounds {
-	/// Prepare the [`IntLinearLessEqImpBounds`] propagator to be posted to the
+	/// Create a new [`IntLinearLessEqImpBounds`] propagator and post it in the
 	/// solver.
-	pub(crate) fn prepare<V: Into<IntView>, VI: IntoIterator<Item = V>>(
-		vars: VI,
+	pub fn new_in(
+		solver: &mut impl PropagatorInitActions,
+		vars: impl IntoIterator<Item = IntView>,
 		mut max: IntVal,
-		r: RawLit,
-	) -> impl Poster {
-		IntLinearLessEqBoundsPoster::<1> {
-			vars: vars
-				.into_iter()
-				.filter_map(|v| {
-					let v = v.into();
-					if let IntViewInner::Const(c) = v.0 {
-						max -= c;
-						None
-					} else {
-						Some(v)
-					}
-				})
-				.collect(),
-			max,
-			reification: OptField::new(r),
+		reification: BoolView,
+	) {
+		let reification = match reification.0 {
+			BoolViewInner::Lit(r) => r,
+			BoolViewInner::Const(true) => return IntLinearLessEqBounds::new_in(solver, vars, max),
+			BoolViewInner::Const(false) => return,
+		};
+		let vars: Vec<IntView> = vars
+			.into_iter()
+			.filter(|v| {
+				if let IntViewInner::Const(c) = v.0 {
+					max -= c;
+					false
+				} else {
+					true
+				}
+			})
+			.collect();
+
+		let prop = solver.add_propagator(
+			Box::new(Self {
+				vars: vars.clone(),
+				max,
+				reification: OptField::new(reification),
+			}),
+			PriorityLevel::Low,
+		);
+		solver.enqueue_now(prop);
+		for &v in vars.iter() {
+			solver.enqueue_on_int_change(prop, v, IntPropCond::UpperBound);
 		}
+		solver.enqueue_on_bool_change(prop, reification.into());
 	}
 }
 
@@ -215,7 +195,7 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		propagator::int_lin_le::IntLinearLessEqBounds,
+		constraints::int_lin_le::IntLinearLessEqBounds,
 		solver::engine::int_var::{EncodingType, IntVar},
 		Constraint, InitConfig, Model, NonZeroIntVal, Solver,
 	};
@@ -243,11 +223,12 @@ mod tests {
 			EncodingType::Lazy,
 		);
 
-		slv.add_propagator(IntLinearLessEqBounds::prepare(
+		IntLinearLessEqBounds::new_in(
+			&mut slv,
 			vec![a * NonZeroIntVal::new(-2).unwrap(), -b, -c],
 			-6,
-		))
-		.unwrap();
+		);
+
 		slv.expect_solutions(
 			&[a, b, c],
 			expect![[r#"
@@ -294,11 +275,7 @@ mod tests {
 			EncodingType::Lazy,
 		);
 
-		slv.add_propagator(IntLinearLessEqBounds::prepare(
-			vec![a * NonZeroIntVal::new(2).unwrap(), b, c],
-			6,
-		))
-		.unwrap();
+		IntLinearLessEqBounds::new_in(&mut slv, vec![a * NonZeroIntVal::new(2).unwrap(), b, c], 6);
 
 		slv.expect_solutions(
 			&[a, b, c],

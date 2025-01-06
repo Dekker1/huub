@@ -18,10 +18,10 @@ use crate::{
 	solver::{
 		engine::Engine,
 		trail::TrailedInt,
-		view::{BoolViewInner, IntViewInner},
+		view::{BoolView, BoolViewInner, IntViewInner},
 		IntView,
 	},
-	BoolView, Clause, IntSetVal, IntVal, LinearTransform, NonZeroIntVal, Solver,
+	Clause, IntSetVal, IntVal, LinearTransform, NonZeroIntVal, Solver,
 };
 
 /// An entry in the [`DirectStorage`] that can be used to access the
@@ -1284,9 +1284,9 @@ mod tests {
 	use crate::{
 		solver::{
 			int_var::{EncodingType, IntVar},
-			view::{BoolViewInner, IntViewInner},
+			view::{BoolView, BoolViewInner, IntViewInner},
 		},
-		BoolView, IntView, LitMeaning, Solver,
+		IntView, LitMeaning, Solver,
 	};
 
 	#[test]

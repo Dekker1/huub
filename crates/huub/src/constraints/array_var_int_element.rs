@@ -1,18 +1,37 @@
-//! Propagators for the `array_var_int_element` constraint, which enforces that
-//! a resulting variable equals an element of an array of variables, chosen by
-//! an index variable.
+//! Structures and algorithms for the `array_var_int_element` constraint, which
+//! enforces that a resulting variable equals an element of an array of
+//! variables, chosen by an index variable.
 
 use itertools::Itertools;
 
 use crate::{
-	actions::{ExplanationActions, PropagatorInitActions},
-	constraints::{Conflict, PropagationActions, Propagator},
+	actions::{
+		ConstraintInitActions, ExplanationActions, PropagatorInitActions, ReformulationActions,
+		SimplificationActions,
+	},
+	constraints::{Conflict, Constraint, PropagationActions, Propagator, SimplificationStatus},
+	model::int::IntExpr,
 	solver::{
 		activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt, value::IntVal,
 		view::IntView,
 	},
 	LitMeaning, ReformulationError,
 };
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// Representation of the `array_var_int_element` constraint within a model.
+///
+/// This constraint enforces that a result integer decision variable takes the
+/// value equal the element of the given array of integer decision variable at
+/// the given index decision variable.
+pub struct ArrayVarIntElement {
+	/// The array of integer values
+	pub(crate) array: Vec<IntExpr>,
+	/// The index variable
+	pub(crate) index: IntExpr,
+	/// The resulting variable
+	pub(crate) result: IntExpr,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Bounds consistent propagator for the `array_var_int_element` constraint.
@@ -27,6 +46,48 @@ pub struct ArrayVarIntElementBounds {
 	min_support: TrailedInt,
 	/// The index of the variable that supports the upper bound of the result
 	max_support: TrailedInt,
+}
+
+impl Constraint for ArrayVarIntElement {
+	fn initialize(&self, actions: &mut impl ConstraintInitActions) {
+		for &a in &self.array {
+			actions.simplify_on_change_int(a);
+		}
+		actions.simplify_on_change_int(self.result);
+		actions.simplify_on_change_int(self.index);
+	}
+
+	fn simplify(
+		&mut self,
+		actions: &mut impl SimplificationActions,
+	) -> Result<SimplificationStatus, ReformulationError> {
+		// make sure idx is within the range of args
+		actions.set_int_lower_bound(self.index, 0)?;
+		actions.set_int_upper_bound(self.index, self.array.len() as IntVal - 1)?;
+		let (min_lb, max_ub) =
+			self.array
+				.iter()
+				.fold((IntVal::MAX, IntVal::MIN), |(min_lb, max_ub), &v| {
+					(
+						min_lb.min(actions.get_int_lower_bound(v)),
+						max_ub.max(actions.get_int_upper_bound(v)),
+					)
+				});
+		if min_lb > actions.get_int_lower_bound(self.result) {
+			actions.set_int_lower_bound(self.result, min_lb)?;
+		}
+		if max_ub < actions.get_int_upper_bound(self.result) {
+			actions.set_int_upper_bound(self.result, max_ub)?;
+		}
+		Ok(SimplificationStatus::Fixpoint)
+	}
+
+	fn to_solver(&self, slv: &mut impl ReformulationActions) -> Result<(), ReformulationError> {
+		let array = self.array.iter().map(|&v| slv.get_solver_int(v)).collect();
+		let result = slv.get_solver_int(self.result);
+		let index = slv.get_solver_int(self.index);
+		ArrayVarIntElementBounds::new_in(slv, array, result, index)
+	}
 }
 
 impl ArrayVarIntElementBounds {
@@ -244,9 +305,10 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
+		array_var_int_element,
 		constraints::array_var_int_element::ArrayVarIntElementBounds,
 		solver::int_var::{EncodingType, IntVar},
-		Constraint, Model, Solver,
+		Model, Solver,
 	};
 
 	#[test]
@@ -355,10 +417,10 @@ mod tests {
 		let a = prb.new_int_var((3..=5).into());
 		let b = prb.new_int_var((4..=5).into());
 		let c = prb.new_int_var((4..=10).into());
-		let y = prb.new_int_var((1..=2).into());
+		let result = prb.new_int_var((1..=2).into());
 		let index = prb.new_int_var((0..=2).into());
 
-		prb += Constraint::ArrayVarIntElement(vec![a, b, c], index, y);
+		prb += array_var_int_element(index, vec![a, b, c], result);
 		prb.assert_unsatisfiable();
 	}
 }

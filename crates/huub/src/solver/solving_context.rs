@@ -18,9 +18,9 @@ use crate::{
 		engine::{trace_new_lit, BoxedPropagator, PropRef, State},
 		int_var::{IntVarRef, LazyLitDef},
 		trail::TrailedInt,
-		view::{BoolViewInner, IntViewInner},
+		view::{BoolView, BoolViewInner, IntViewInner},
 	},
-	BoolView, Clause, IntVal, IntView, LitMeaning,
+	Clause, IntVal, IntView, LitMeaning,
 };
 
 /// Type used to communicate whether a change is redundant, conflicting, or new.

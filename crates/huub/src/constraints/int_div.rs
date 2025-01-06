@@ -1,16 +1,37 @@
-//! Propagators for the `int_div` constraint, which enforces that a numerator, a
-//! denominator, and a result variable are correctly related by integer
-//! division.
+//! Structures and algorithms for the `int_div` constraint, which enforces that
+//! a numerator, a denominator, and a result variable are correctly related by
+//! integer division.
 
 use std::mem;
 
 use crate::{
-	actions::{ExplanationActions, PropagatorInitActions},
-	constraints::{Conflict, PropagationActions, Propagator},
+	actions::{
+		ExplanationActions, PropagatorInitActions, ReformulationActions, SimplificationActions,
+	},
+	constraints::{Conflict, Constraint, PropagationActions, Propagator, SimplificationStatus},
 	helpers::div_ceil,
+	model::int::IntExpr,
 	solver::{activation_list::IntPropCond, queue::PriorityLevel},
 	IntView, LitMeaning, NonZeroIntVal, ReformulationError,
 };
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// Representation of the `int_div` constraint within a model.
+///
+/// This constraint enforces that a numerator decision integer variable divided
+/// by a denominator integer decision variable is equal to a result integer
+/// decision variable.
+///
+/// Note that the division is integer division, i.e. the result is rounded
+/// towards zero.
+pub struct IntDiv {
+	/// The numerator of the division
+	pub(crate) numerator: IntExpr,
+	/// The denominator of the division
+	pub(crate) denominator: IntExpr,
+	/// Result of the division
+	pub(crate) result: IntExpr,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Bounds propagator for the division of two integer variables.
@@ -24,6 +45,23 @@ pub struct IntDivBounds {
 	denominator: IntView,
 	/// Result of the division
 	result: IntView,
+}
+
+impl Constraint for IntDiv {
+	fn simplify(
+		&mut self,
+		actions: &mut impl SimplificationActions,
+	) -> Result<SimplificationStatus, ReformulationError> {
+		actions.set_int_not_eq(self.denominator, 0)?;
+		Ok(SimplificationStatus::Fixpoint)
+	}
+
+	fn to_solver(&self, slv: &mut impl ReformulationActions) -> Result<(), ReformulationError> {
+		let numerator = slv.get_solver_int(self.numerator);
+		let denominator = slv.get_solver_int(self.denominator);
+		let result = slv.get_solver_int(self.result);
+		IntDivBounds::new_in(slv, numerator, denominator, result)
+	}
 }
 
 impl IntDivBounds {

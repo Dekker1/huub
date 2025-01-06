@@ -38,9 +38,9 @@ use crate::{
 		queue::PriorityLevel,
 		trail::TrailedInt,
 		value::{AssumptionChecker, NoAssumptions, Valuation, Value},
-		view::{BoolViewInner, IntView, IntViewInner, SolverView},
+		view::{BoolView, BoolViewInner, IntView, IntViewInner, SolverView},
 	},
-	BoolView, IntVal, LitMeaning, ReformulationError,
+	IntVal, LitMeaning, ReformulationError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

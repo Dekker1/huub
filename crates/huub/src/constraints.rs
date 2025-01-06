@@ -1,15 +1,17 @@
 //! Module containing the definitions for propagators and their implementations.
 
 pub mod all_different_int;
+pub mod array_int_element;
 pub mod array_int_minimum;
+pub mod array_var_bool_element;
 pub mod array_var_int_element;
 pub mod disjunctive_strict;
 pub mod int_abs;
 pub mod int_div;
-pub mod int_lin_le;
-pub mod int_lin_ne;
+pub mod int_linear;
 pub mod int_pow;
 pub mod int_times;
+pub mod set_in_reif;
 pub mod table_int;
 
 use std::{
@@ -24,13 +26,16 @@ use index_vec::IndexVec;
 use pindakaas::Lit as RawLit;
 
 use crate::{
-	actions::{ExplanationActions, PropagationActions},
+	actions::{
+		ConstraintInitActions, ExplanationActions, PropagationActions, ReformulationActions,
+		SimplificationActions,
+	},
 	solver::{
 		engine::{BoxedPropagator, PropRef, State},
 		solving_context::SolvingContext,
-		view::BoolViewInner,
+		view::{BoolView, BoolViewInner},
 	},
-	BoolView, Conjunction,
+	Conjunction, ReformulationError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,6 +59,41 @@ pub struct Conflict {
 	/// The reason for the conflict
 	/// This reason must result a conjunction that implies false
 	pub(crate) reason: Reason,
+}
+
+/// A trait for constraints that can be placed in a [`Model`] object.
+///
+/// Constraints specified in the library implement this trait, but are using
+/// their explicit type in an enumerated type to allow for global model
+/// analysis.
+pub trait Constraint {
+	/// Method called when a constraint is added to the model, allowing the
+	/// constraint to request addtional calls to its [`Constraint::simplify`]
+	/// method when decision variables change.
+	fn initialize(&self, actions: &mut impl ConstraintInitActions) {
+		let _ = actions;
+		// Default implementation does nothing
+	}
+
+	/// Simplify the [`Model`] given the current constraint.
+	///
+	/// This method is expected to reduce the domains of decision variables,
+	/// rewrite the constraint to a simpler form, or detect when the constraint is
+	/// already subsumed by the current state of the model.
+	fn simplify(
+		&mut self,
+		actions: &mut impl SimplificationActions,
+	) -> Result<SimplificationStatus, ReformulationError> {
+		let _ = actions;
+		Ok(SimplificationStatus::Fixpoint)
+	}
+
+	/// Encode the constraint using [`Propagator`] objects or clauses for a
+	/// [`Solver`] object.
+	///
+	/// This method is should place all required propagators and/or clauses in a
+	/// [`Solver`] object to ensure the constraint will not be violated.
+	fn to_solver(&self, actions: &mut impl ReformulationActions) -> Result<(), ReformulationError>;
 }
 
 /// A trait to allow the cloning of boxed propagators.
@@ -126,6 +166,22 @@ pub trait ReasonBuilder<A: ExplanationActions + ?Sized> {
 	/// Construct a `Reason`, or return a Boolean indicating that the reason is
 	/// trivial.
 	fn build_reason(self, actions: &mut A) -> Result<Reason, bool>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Status returned by the [`SimplificationActions::simplify`] method,
+/// indicating whether the constraint has been subsumed (such that it can be
+/// removed from the [`Model`]) or not.
+pub enum SimplificationStatus {
+	/// The constraint has been simplified as much as possible, but should be kept
+	/// in the [`Model`].
+	///
+	/// Simplification can be triggered again if any of the decision variables the
+	/// constraint depends on change.
+	Fixpoint,
+	/// The constraint has been simplified to the point where it is subsumed. The
+	/// constraint can be removed from the [`Model`].
+	Subsumed,
 }
 
 impl<A: ExplanationActions> ReasonBuilder<A> for BoolView {

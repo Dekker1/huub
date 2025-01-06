@@ -11,9 +11,9 @@ use crate::{
 		engine::BoxedBrancher,
 		solving_context::SolvingContext,
 		trail::TrailedInt,
-		view::{BoolViewInner, IntView, IntViewInner},
+		view::{BoolView, BoolViewInner, IntView, IntViewInner},
 	},
-	BoolView, LitMeaning, SolverView,
+	LitMeaning, SolverView,
 };
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

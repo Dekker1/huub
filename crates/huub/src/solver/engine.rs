@@ -45,10 +45,10 @@ use crate::{
 		queue::{PriorityLevel, PriorityQueue},
 		solving_context::SolvingContext,
 		trail::{Trail, TrailedInt},
-		view::{BoolViewInner, IntViewInner},
+		view::{BoolView, BoolViewInner, IntViewInner},
 		SolverConfiguration,
 	},
-	BoolView, Clause, Conjunction, IntVal, IntView,
+	Clause, Conjunction, IntVal, IntView,
 };
 
 /// Type alias to represent [`Brancher`] contained in a [`Box`], that is used by

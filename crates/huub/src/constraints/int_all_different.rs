@@ -223,7 +223,7 @@ mod tests {
 		assert_eq!(
 			slv.solve(|val| {
 				(0..9).for_each(|r| {
-					let row = all_vars[r].iter().map(|&v| val(v.into())).collect_vec();
+					let row = all_vars[r].iter().map(|&v| val(&v.into())).collect_vec();
 					assert!(
 						row.iter().all_unique(),
 						"Values in row {} are not all different: {:?}",
@@ -232,7 +232,7 @@ mod tests {
 					);
 				});
 				(0..9).for_each(|c| {
-					let col = all_vars.iter().map(|row| val(row[c].into())).collect_vec();
+					let col = all_vars.iter().map(|row| val(&row[c].into())).collect_vec();
 					assert!(
 						col.iter().all_unique(),
 						"Values in column {} are not all different: {:?}",
@@ -244,7 +244,7 @@ mod tests {
 					(0..3).for_each(|j| {
 						let block = (0..3)
 							.flat_map(|x| (0..3).map(move |y| (x, y)))
-							.map(|(x, y)| val(all_vars[3 * i + x][3 * j + y].into()))
+							.map(|(x, y)| val(&all_vars[3 * i + x][3 * j + y].into()))
 							.collect_vec();
 						assert!(
 							block.iter().all_unique(),

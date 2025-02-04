@@ -229,7 +229,7 @@ where
 			let mut keys: Vec<_> = var_map.keys().collect();
 			keys.sort();
 			for name in keys {
-				let v = var_map[name];
+				let v = &var_map[name];
 				match v {
 					View::Bool(bv) => {
 						if let Some(info) = bv.reverse_map_info() {
@@ -266,6 +266,7 @@ where
 							}
 						}
 					}
+					View::Set(_) => todo!(),
 				}
 			}
 			*lit_reverse_map.lock().unwrap() = lit_map;
@@ -351,14 +352,14 @@ where
 						.iter()
 						.filter_map(|lit| {
 							if let Literal::Identifier(ident) = lit {
-								Some(var_map[ident])
+								Some(var_map[ident].clone())
 							} else {
 								None
 							}
 						})
 						.collect()
 				} else {
-					vec![var_map[ident]]
+					vec![var_map[ident].clone()]
 				}
 			})
 			.collect();
@@ -389,7 +390,7 @@ where
 						);
 						if self.all_optimal {
 							for (i, var) in output_vars.iter().enumerate() {
-								no_good_vals[i] = value(*var);
+								no_good_vals[i] = value(var);
 							}
 						}
 					})
@@ -411,7 +412,7 @@ where
 						.to_string();
 						if self.all_optimal {
 							for (i, var) in output_vars.iter().enumerate() {
-								no_good_vals[i] = value(*var);
+								no_good_vals[i] = value(var);
 							}
 						}
 					});
@@ -640,7 +641,7 @@ impl Solution<'_> {
 			Literal::Int(i) => format!("{i}"),
 			Literal::Float(f) => format!("{f}"),
 			Literal::Identifier(ident) => {
-				format!("{}", (self.value)(self.var_map[ident]))
+				format!("{}", (self.value)(&self.var_map[ident]))
 			}
 			Literal::Bool(b) => format!("{b}"),
 			Literal::IntSet(is) => is
@@ -672,7 +673,7 @@ impl Display for Solution<'_> {
 						.join(",")
 				)?;
 			} else {
-				writeln!(f, "{ident} = {};", (self.value)(self.var_map[ident]))?;
+				writeln!(f, "{ident} = {};", (self.value)(&self.var_map[ident]))?;
 			}
 		}
 		writeln!(f, "{}", FZN_SEPERATOR)

@@ -26,7 +26,9 @@ use pindakaas::{
 		TermCallback,
 	},
 	BoolVal, ClauseDatabase, Cnf, Lit as RawLit, Unsatisfiable, Valuation as SatValuation,
+	VarRange,
 };
+use rangelist::RangeList;
 use tracing::{debug, trace};
 
 use crate::{
@@ -45,7 +47,7 @@ use crate::{
 		queue::PriorityLevel,
 		trail::TrailedInt,
 	},
-	Clause, IntVal, LinearTransform, Model, NonZeroIntVal, ReformulationError,
+	Clause, IntSetVal, IntVal, LinearTransform, Model, NonZeroIntVal, ReformulationError,
 };
 
 /// Trait implemented by the object given to the callback on detecting failure
@@ -146,6 +148,20 @@ pub(crate) enum IntViewInner {
 /// Note that this checker will always return false.
 pub(crate) struct NoAssumptions;
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// A reference to a set of integers type value in the solver that can be
+/// expected as part of a solution.
+pub struct SetView(pub(crate) SetViewInner);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SetViewInner {
+	Const(IntSetVal),
+	Eager {
+		domain: RangeList<IntVal>,
+		vars: VarRange,
+	},
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Result of a solving attempt
 pub enum SolveResult {
@@ -185,9 +201,9 @@ pub(crate) struct SolverConfiguration {
 
 /// A trait for a function that can be used to evaluate a `SolverView` to a
 /// `Value`, which can be used when inspecting a solution.
-pub trait Valuation: Fn(View) -> Value {}
+pub trait Valuation: Fn(&View) -> Value {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(variant_size_differences, reason = "`Int` cannot be as smal as `Bool`")]
 /// The general representation of a solution value in the solver.
 pub enum Value {
@@ -195,9 +211,11 @@ pub enum Value {
 	Bool(bool),
 	/// An integer value.
 	Int(IntVal),
+	/// A set of integers value.
+	Set(IntSetVal),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// A reference to a value in the solver that can be expected as part of a
 /// solution.
 pub enum View {
@@ -205,6 +223,8 @@ pub enum View {
 	Bool(BoolView),
 	/// An integer type value.
 	Int(IntView),
+	/// A set of integers type value.
+	Set(SetView),
 }
 
 fn trace_learned_clause(clause: &mut dyn Iterator<Item = RawLit>) {
@@ -286,7 +306,7 @@ impl Not for BoolView {
 	}
 }
 
-impl<F: Fn(View) -> Value> Valuation for F {}
+impl<F: Fn(&View) -> Value> Valuation for F {}
 
 impl InitStatistics {
 	/// Number of integer variables present in the solver
@@ -590,17 +610,46 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 		let clause = vars
 			.iter()
 			.zip_eq(vals)
-			.map(|(var, val)| match *var {
-				View::Bool(bv) => match val {
+			.flat_map(|(var, val)| match var {
+				&View::Bool(bv) => vec![match val {
 					Value::Bool(true) => !bv,
 					Value::Bool(false) => bv,
 					_ => unreachable!(),
-				},
-				View::Int(iv) => {
-					let Value::Int(val) = val.clone() else {
+				}],
+				&View::Int(iv) => {
+					let &Value::Int(val) = val else {
 						unreachable!()
 					};
-					self.get_int_lit(iv, IntLitMeaning::NotEq(val))
+					vec![self.get_int_lit(iv, IntLitMeaning::NotEq(val))]
+				}
+				View::Set(sv) => {
+					let Value::Set(val) = val else { unreachable!() };
+					match &sv.0 {
+						SetViewInner::Const(s) => {
+							debug_assert_eq!(val, s);
+							Vec::new()
+						}
+						SetViewInner::Eager { domain, vars } => {
+							let mut val_iter = val.iter().flatten().peekable();
+							vars.into_iter()
+								.zip(domain.iter().flatten())
+								.map(|(var, elem)| {
+									BoolView(BoolViewInner::Lit(
+										if val_iter.peek() == Some(&elem) {
+											_ = val_iter.next();
+											!var
+										} else {
+											debug_assert!(
+												val_iter.peek().is_none()
+													|| *val_iter.peek().unwrap() > elem
+											);
+											var.into()
+										},
+									))
+								})
+								.collect_vec()
+						}
+					}
 				}
 			})
 			.collect_vec();
@@ -626,7 +675,7 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 			let status = self.solve(|value| {
 				num_sol += 1;
 				for v in vars {
-					vals.push(value(*v));
+					vals.push(value(v));
 				}
 				on_sol(value);
 			});
@@ -676,7 +725,7 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 			let status = self.solve_assuming(
 				assump,
 				|value| {
-					obj_curr = if let Value::Int(i) = value(View::Int(objective)) {
+					obj_curr = if let Value::Int(i) = value(&View::Int(objective)) {
 						Some(i)
 					} else {
 						unreachable!()
@@ -771,7 +820,7 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 		let status = self.all_solutions(vars, |sol| {
 			let mut sol_vec = Vec::with_capacity(vars.len());
 			for v in vars {
-				sol_vec.push(sol(*v));
+				sol_vec.push(sol(v));
 			}
 			solutions.push(sol_vec);
 		});
@@ -852,6 +901,33 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 							transformer.transform(sol.value(lit) as IntVal)
 						}
 					}),
+					View::Set(var) => Value::Set(match &var.0 {
+						SetViewInner::Const(s) => s.clone(),
+						SetViewInner::Eager { vars, domain } => {
+							let mut ranges = Vec::new();
+							let mut lb = *domain.lower_bound().unwrap();
+							let mut ub = None;
+							for (var, elem) in vars.into_iter().zip(domain.iter().flatten()) {
+								if sol.value(var.into()) {
+									match ub {
+										Some(prev) if prev + 1 == elem => {}
+										Some(prev) => {
+											ranges.push(lb..=prev);
+											lb = elem;
+										}
+										None => {
+											lb = elem;
+										}
+									}
+									ub = Some(elem);
+								}
+							}
+							if let Some(prev) = ub {
+								ranges.push(lb..=prev);
+							}
+							RangeList::from_iter(ranges)
+						}
+					}),
 				};
 				on_sol(wrapper);
 				SolveResult::Satisfied
@@ -909,7 +985,7 @@ impl<Oracle: ClauseDatabase> ClauseDatabase for Solver<Oracle> {
 	delegate! {
 		to self.oracle {
 			fn add_clause_from_slice(&mut self, clause: &[RawLit]) -> Result<(), Unsatisfiable>;
-			fn new_var_range(&mut self, len: usize) -> pindakaas::VarRange;
+			fn new_var_range(&mut self, len: usize) -> VarRange;
 		}
 	}
 }
@@ -1105,6 +1181,7 @@ impl Display for Value {
 		match self {
 			Value::Bool(b) => write!(f, "{b}"),
 			Value::Int(i) => write!(f, "{i}"),
+			Value::Set(s) => write!(f, "{s}"),
 		}
 	}
 }

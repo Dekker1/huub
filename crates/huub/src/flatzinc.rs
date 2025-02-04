@@ -25,7 +25,7 @@ use crate::{
 	array_minimum_int, constraints::int_table::IntTable, disjunctive_strict, div_int,
 	int_in_set_reif, pow_int, reformulate::ReformulationError, table_int, times_int, BoolDecision,
 	BoolDecisionInner, Branching, Decision, IntDecision, IntDecisionInner, IntLinExpr, IntSetVal,
-	IntVal, Model, NonZeroIntVal, ValueSelection, VariableSelection,
+	IntVal, Model, NonZeroIntVal, SetDecision, SetDecisionInner, ValueSelection, VariableSelection,
 };
 
 #[derive(Error, Debug)]
@@ -416,6 +416,19 @@ where
 		}
 	}
 
+	/// Extract a set of integers decision variable from the an [`Argument`] in a
+	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
+	/// returned if the argument was not a Boolean decision variable.
+	fn arg_set(&mut self, arg: &Argument<S>) -> Result<SetDecision, FlatZincError> {
+		match arg {
+			Argument::Literal(l) => self.lit_set(l),
+			_ => Err(FlatZincError::InvalidArgumentType {
+				expected: "set of int literal",
+				found: format!("{:?}", arg),
+			}),
+		}
+	}
+
 	/// Extract a parameter integer set value from the an [`Argument`] in a
 	/// [`FlatZinc`] instance. A [`FlatZincError::InvalidArgumentType`] will be
 	/// returned if the argument was not a parameter set.
@@ -552,19 +565,20 @@ where
 
 		let add_view = |me: &mut Self, name: S, view: Decision| -> Result<(), FlatZincError> {
 			match me.map.entry(name) {
-				Entry::Occupied(e) => match *e.get() {
-					Decision::Bool(bv) => {
+				Entry::Occupied(e) => match e.get() {
+					&Decision::Bool(bv) => {
 						let Decision::Bool(view) = view else {
 							unreachable!()
 						};
 						me.prb.unify_bool(bv, view)?;
 					}
-					Decision::Int(iv) => {
+					&Decision::Int(iv) => {
 						let Decision::Int(view) = view else {
 							unreachable!()
 						};
 						me.prb.unify_int(iv, view)?;
 					}
+					Decision::Set(_sv) => todo!(),
 				},
 				Entry::Vacant(e) => {
 					let _ = e.insert(view);
@@ -723,6 +737,10 @@ where
 					expected: "bool",
 					found: "int".to_owned(),
 				}),
+				Decision::Set(_) => Err(FlatZincError::InvalidArgumentType {
+					expected: "bool",
+					found: "set of int".to_owned(),
+				}),
 			})?,
 			&Literal::Bool(v) => Ok(v.into()),
 			_ => todo!(),
@@ -740,9 +758,31 @@ where
 					expected: "int",
 					found: "bool".to_owned(),
 				}),
+				Decision::Set(_) => Err(FlatZincError::InvalidArgumentType {
+					expected: "int",
+					found: "set of int".to_owned(),
+				}),
 			})?,
 			&Literal::Bool(v) => Ok((v as IntVal).into()),
 			&Literal::Int(v) => Ok(v.into()),
+			_ => todo!(),
+		}
+	}
+
+	fn lit_set(&mut self, lit: &Literal<S>) -> Result<SetDecision, FlatZincError> {
+		match lit {
+			Literal::Identifier(ident) => self.lookup_or_create_var(&ident).map(|mv| match mv {
+				Decision::Bool(_) => Err(FlatZincError::InvalidArgumentType {
+					expected: "set of int",
+					found: "bool".to_owned(),
+				}),
+				Decision::Int(_) => Err(FlatZincError::InvalidArgumentType {
+					expected: "set of int",
+					found: "int".to_owned(),
+				}),
+				Decision::Set(sv) => Ok(sv),
+			})?,
+			Literal::IntSet(v) => Ok(v.clone().into()),
 			_ => todo!(),
 		}
 	}
@@ -756,8 +796,13 @@ where
 					Ok(e.insert(match var.ty {
 						Type::Bool => Decision::Bool(self.prb.new_bool_var()),
 						Type::Int => match &var.domain {
+							Some(Domain::Int(r)) => Decision::Int(self.prb.new_int_var(r.clone())),
+							Some(_) => unreachable!(),
+							None => todo!("Variables without a domain are not yet supported"),
+						},
+						Type::IntSet => match &var.domain {
 							Some(Domain::Int(r)) => {
-								Decision::Int(self.prb.new_int_var(r.iter().collect()))
+								Decision::Set(self.prb.new_set_var(r.clone(), None))
 							}
 							Some(_) => unreachable!(),
 							None => todo!("Variables without a domain are not yet supported"),
@@ -851,7 +896,7 @@ where
 					Err(FlatZincError::UnknownIdentifier(ident.to_string()))
 				}
 			}
-			Literal::IntSet(v) => Ok(v.iter().collect()),
+			Literal::IntSet(v) => Ok(v.clone()),
 			_ => todo!(),
 		}
 	}
@@ -1483,6 +1528,28 @@ where
 							name: "int_times",
 							found: c.args.len(),
 							expected: 3,
+						});
+					}
+				}
+				"set_card" => {
+					if let [sv, card] = c.args.as_slice() {
+						let sv = self.arg_set(sv)?;
+						let card = self.arg_int(card)?;
+
+						let SetDecisionInner::Var(sv) = sv.0 else {
+							todo!()
+						};
+						let store = &mut self.prb.set_vars[sv];
+						debug_assert_eq!(
+							store.card, None,
+							"Multiple set_card constraints found for the same SetDecision"
+						);
+						store.card = Some(card);
+					} else {
+						return Err(FlatZincError::InvalidNumArgs {
+							name: "set_card",
+							found: c.args.len(),
+							expected: 2,
 						});
 					}
 				}

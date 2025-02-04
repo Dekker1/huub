@@ -65,9 +65,9 @@ use crate::{
 	reformulate::{
 		BoolDecisionDef, BoolDecisionInner, ConstraintStore, Domain, InitConfig, IntDecisionDef,
 		IntDecisionIndex, IntDecisionInner, ReformulationError, ReformulationMap,
-		ReformulationMapBuilder,
+		ReformulationMapBuilder, SetDecisionDef, SetDecisionIndex, SetDecisionInner,
 	},
-	solver::{engine::Engine, IntLitMeaning, Solver},
+	solver::{engine::Engine, IntLitMeaning, SetViewInner, Solver},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -120,6 +120,8 @@ pub enum Decision {
 	Bool(BoolDecision),
 	/// Reference to an integer decision.
 	Int(IntDecision),
+	/// Reference to an set of integer decision.
+	Set(SetDecision),
 }
 
 /// Helper trait used to create array element constraints for on collections of
@@ -176,6 +178,8 @@ pub struct Model {
 	bool_vars: Vec<BoolDecisionDef>,
 	/// The definitions of the integer variables that have been created.
 	int_vars: IndexVec<IntDecisionIndex, IntDecisionDef>,
+	/// The definitions of the set of integers decision variables that have been created.
+	set_vars: IndexVec<SetDecisionIndex, SetDecisionDef>,
 	/// A queue of indexes of constraints that need to be propagated.
 	prop_queue: VecDeque<usize>,
 	/// A flag for each constraint whether it has been enqueued for propagation.
@@ -184,6 +188,14 @@ pub struct Model {
 
 /// Type alias for a non-zero parameter integer value.
 pub type NonZeroIntVal = NonZeroI64;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// A reference to decision choosing a set of integers in the [`Model`].
+///
+/// Note that decisions only represent where the decision is kept, using a
+/// [`SetDecision`] with a [`Model`] that did not create it will lead to
+/// undefined behavior.
+pub struct SetDecision(SetDecisionInner);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Strategy for limiting the domain of a selected decision variable as part of
@@ -947,6 +959,20 @@ impl Model {
 		}
 	}
 
+	/// Create a new set of integers decision variable allowing possible elements
+	/// from `elem_domain` and with a cardinality of within `card_domain`.
+	pub fn new_set_var(
+		&mut self,
+		elem_domain: IntSetVal,
+		card: Option<IntDecision>,
+	) -> SetDecision {
+		SetDecision(SetDecisionInner::Var(self.set_vars.push(SetDecisionDef {
+			elem_domain,
+			card,
+			constraints: Vec::new(),
+		})))
+	}
+
 	/// Create `len` new integer variables with the given domain.
 	pub fn new_int_vars(&mut self, len: usize, domain: IntSetVal) -> Vec<IntDecision> {
 		repeat(IntDecisionDef::with_domain(domain))
@@ -1171,6 +1197,7 @@ impl Model {
 			int_eager_limit: config.int_eager_limit(),
 			int_eager_order,
 			int_map: index_vec![None; self.int_vars.len()],
+			set_map: index_vec![None; self.set_vars.len()],
 		};
 
 		// Ensure the creation of all Boolean variables.
@@ -1182,6 +1209,11 @@ impl Model {
 		// Ensure the creation of all integer variables.
 		for (idx, _) in self.int_vars.iter_enumerated() {
 			let _ = map_builder.get_or_create_int(self, &mut slv, idx);
+		}
+
+		// Ensure the creation of all set variables.
+		for (idx, _) in self.set_vars.iter_enumerated() {
+			let _ = map_builder.get_or_create_set(self, &mut slv, idx);
 		}
 
 		// Finalize the reformulation map (all variables must be created by now)
@@ -1976,6 +2008,12 @@ impl SimplificationActions for Model {
 		}
 
 		Ok(())
+	}
+}
+
+impl From<IntSetVal> for SetDecision {
+	fn from(value: IntSetVal) -> Self {
+		Self(SetDecisionInner::Const(value))
 	}
 }
 

@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use expect_test::Expect;
 use itertools::Itertools;
 use pindakaas::propositional_logic::Formula;
@@ -22,7 +24,7 @@ fn it_works() {
 
 	assert_eq!(
 		slv.solve(|value| {
-			assert_ne!(value(a.into()), value(b.into()));
+			assert_ne!(value(&a.into()), value(&b.into()));
 		}),
 		SolveResult::Satisfied
 	);
@@ -43,8 +45,8 @@ fn unification_impossible() {
 
 	assert_eq!(
 		slv.solve(|value| {
-			assert_eq!(value(a.into()), Value::Int(5));
-			assert_eq!(value(b.into()), Value::Int(2));
+			assert_eq!(value(&a.into()), Value::Int(5));
+			assert_eq!(value(&b.into()), Value::Int(2));
 		}),
 		SolveResult::Satisfied
 	);
@@ -70,7 +72,7 @@ impl Solver {
 		let status = self.all_solutions(&vars, |value| {
 			let mut soln = Vec::with_capacity(vars.len());
 			for var in &vars {
-				soln.push(value(*var));
+				soln.push(value(var));
 			}
 			assert!(pred(&soln));
 		});
@@ -85,7 +87,27 @@ impl Solver {
 		let vars: Vec<_> = vars.iter().map(|v| v.clone().into()).collect();
 		let (status, mut solns) = self.get_all_solutions(&vars);
 		assert_eq!(status, SolveResult::Complete);
-		solns.sort();
+		solns.sort_by(|left, right| {
+			for x in left.iter().zip(right.iter()) {
+				let ord = match x {
+					(Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+					(Value::Bool(_), _) => Ordering::Less,
+					(Value::Int(x), Value::Int(y)) => x.cmp(y),
+					(Value::Int(_), Value::Bool(_)) => Ordering::Less,
+					(Value::Int(_), _) => Ordering::Greater,
+					(Value::Set(x), Value::Set(y)) => {
+						let vec_x: Vec<_> = x.iter().map(|x| (*x.start(), *x.end())).collect();
+						let vec_y: Vec<_> = y.iter().map(|x| (*x.start(), *x.end())).collect();
+						vec_x.cmp(&vec_y)
+					}
+					(Value::Set(_), _) => Ordering::Greater,
+				};
+				if ord != Ordering::Equal {
+					return ord;
+				}
+			}
+			Ordering::Equal
+		});
 		let solns = format!(
 			"{}",
 			solns.iter().format_with("\n", |sol, f| {
@@ -94,6 +116,7 @@ impl Solver {
 					sol.iter().format_with(", ", |elt, g| match elt {
 						Value::Bool(b) => g(&format_args!("{}", b)),
 						Value::Int(i) => g(&format_args!("{}", i)),
+						Value::Set(s) => g(&format_args!("{}", s)),
 					})
 				))
 			})

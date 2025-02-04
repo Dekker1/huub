@@ -27,7 +27,7 @@ use crate::{
 		int_array_minimum::IntArrayMinimum,
 		int_div::IntDiv,
 		int_in_set::IntInSetReif,
-		int_linear::IntLinear,
+		int_linear::{IntLinear, IntLinearLessEqBounds},
 		int_pow::IntPow,
 		int_table::IntTable,
 		int_times::IntTimes,
@@ -40,10 +40,10 @@ use crate::{
 		int_var::{EncodingType, IntVar, IntVarRef},
 		queue::PriorityLevel,
 		trail::TrailedInt,
-		BoolView, BoolViewInner, IntView, IntViewInner, View,
+		BoolView, BoolViewInner, IntView, IntViewInner, SetView, View,
 	},
 	BoolDecision, BoolFormula, Decision, IntDecision, IntEq, IntLitMeaning, IntSetVal, IntVal,
-	Model, Solver,
+	Model, SetDecision, SetViewInner, Solver,
 };
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -186,6 +186,8 @@ pub struct ReformulationMap {
 	pub(crate) bool_map: Vec<BoolView>,
 	/// Map of integer decisions to integer views.
 	pub(crate) int_map: IndexVec<IntDecisionIndex, IntView>,
+	/// Map of set decisions to set views.
+	pub(crate) set_map: IndexVec<SetDecisionIndex, SetView>,
 }
 
 /// Helper type to create a [`ReformulationMap`] object.
@@ -206,6 +208,30 @@ pub(crate) struct ReformulationMapBuilder {
 	pub(crate) int_eager_order: HashSet<IntDecisionIndex>,
 	/// Map of integer decisions to integer views.
 	pub(crate) int_map: IndexVec<IntDecisionIndex, Option<IntView>>,
+	/// Map of set decisions to set views.
+	pub(crate) set_map: IndexVec<SetDecisionIndex, Option<SetView>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Definition of a set decision variable in a [`Model`].
+pub(crate) struct SetDecisionDef {
+	/// Possible elements that the set can contain.
+	pub(crate) elem_domain: IntSetVal,
+	/// The [`IntView`] representing cardinality of the set variable (if it is
+	/// constrained).
+	pub(crate) card: Option<IntDecision>,
+	/// The list of constraints that must
+	pub(crate) constraints: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Inner storage for [`SetDecision`], kept private to prevent access from
+/// users.
+pub(crate) enum SetDecisionInner {
+	/// Direct reference to a set of integers decision variable.
+	Var(SetDecisionIndex),
+	/// Constant integer set value.
+	Const(IntSetVal),
 }
 
 impl<S: SimplificationActions> Constraint<S> for BoolFormula {
@@ -423,12 +449,13 @@ impl ReformulationMap {
 		index: &Decision,
 	) -> View {
 		match index {
-			Decision::Bool(b) => View::Bool(self.get_bool(slv, *b)),
-			Decision::Int(i) => View::Int(self.get_int(slv, *i)),
+			&Decision::Bool(b) => View::Bool(self.get_bool(slv, b)),
+			&Decision::Int(i) => View::Int(self.get_int(slv, i)),
+			Decision::Set(s) => View::Set(self.get_set(slv, s)),
 		}
 	}
 
-	/// Lookup the solver [`BoolView`] to which the given model [`bool::BoolView`]
+	/// Lookup the solver [`BoolView`] to which the given model [`BoolDecision`]
 	/// maps.
 	pub fn get_bool(&self, slv: &mut dyn PropagatorInitActions, bv: BoolDecision) -> BoolView {
 		use BoolDecisionInner::*;
@@ -458,7 +485,7 @@ impl ReformulationMap {
 		}
 	}
 
-	/// Lookup the solver [`IntView`] to which the given model [`int::IntView`]
+	/// Lookup the solver [`IntView`] to which the given model [`IntDecision`]
 	/// maps.
 	pub fn get_int(&self, slv: &mut dyn PropagatorInitActions, iv: IntDecision) -> IntView {
 		use IntDecisionInner::*;
@@ -477,6 +504,17 @@ impl ReformulationMap {
 					BoolViewInner::Const(b) => t.transform(b as IntVal).into(),
 				}
 			}
+		}
+	}
+
+	/// Lookup the solver [`SetView`] to which the given model [`SetDecision`]
+	/// maps.
+	fn get_set(&self, _slv: &mut dyn PropagatorInitActions, sv: &SetDecision) -> SetView {
+		use SetDecisionInner::*;
+
+		match &sv.0 {
+			&Var(i) => self.set_map[i].clone(),
+			Const(c) => SetView(SetViewInner::Const(c.clone())),
 		}
 	}
 }
@@ -584,6 +622,52 @@ impl ReformulationMapBuilder {
 		}
 	}
 
+	pub(crate) fn get_or_create_set<Oracle: PropagatingSolver<Engine>>(
+		&mut self,
+		model: &Model,
+		slv: &mut Solver<Oracle>,
+		idx: SetDecisionIndex,
+	) -> SetView {
+		if let Some(v) = &self.set_map[idx] {
+			return v.clone();
+		}
+		let var = &model.set_vars[idx];
+		let vars = slv.new_var_range(var.elem_domain.card());
+		// Add cardinality constraints for the set variables when required
+		if let Some(card) = var.card {
+			let (term, c) = match card.0 {
+				IntDecisionInner::Const(c) => (None, c),
+				IntDecisionInner::Var(idx) => (Some(-self.get_or_create_int(model, slv, idx)), 0),
+				IntDecisionInner::Linear(lt, idx) => {
+					let iv = self.get_or_create_int(model, slv, idx);
+					(Some(iv * -lt.scale + lt.offset), 0)
+				}
+				IntDecisionInner::Bool(lt, bv) => {
+					let bv = self.get_or_create_bool(model, slv, bv);
+					(Some(bv * -lt.scale.get() + lt.offset), 0)
+				}
+			};
+			let terms: Vec<_> = vars
+				.clone()
+				.map(|v| {
+					IntView(IntViewInner::Bool {
+						transformer: LinearTransform::default(),
+						lit: v.into(),
+					})
+				})
+				.chain(term)
+				.collect();
+			IntLinearLessEqBounds::new_in(slv, terms.iter().copied().map(|v| -v), -c);
+			IntLinearLessEqBounds::new_in(slv, terms, c);
+		}
+		let res = SetView(SetViewInner::Eager {
+			vars,
+			domain: var.elem_domain.clone(),
+		});
+		self.set_map[idx] = Some(res.clone());
+		res
+	}
+
 	/// Create the [`ReformulationMap`] object ensuring that all variables have a
 	/// representation in the [`Solver`].
 	pub(crate) fn finalize(self) -> ReformulationMap {
@@ -598,6 +682,11 @@ impl ReformulationMapBuilder {
 				.into_iter()
 				.map(|v| v.expect("variable should be resolved before finalize()"))
 				.collect(),
+			set_map: self
+				.set_map
+				.into_iter()
+				.map(|v| v.expect("variable should be resolved before finalize()"))
+				.collect(),
 		}
 	}
 }
@@ -605,4 +694,9 @@ impl ReformulationMapBuilder {
 define_index_type! {
 	/// Reference type for integer decision variables in a [`Model`].
 	pub(crate) struct IntDecisionIndex = u32;
+}
+
+define_index_type! {
+	/// Reference type for set of integer decision variables in a [`Model`].
+	pub(crate) struct SetDecisionIndex = u32;
 }

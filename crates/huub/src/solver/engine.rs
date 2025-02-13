@@ -19,7 +19,7 @@ macro_rules! trace_new_lit {
 }
 
 use std::{
-	collections::{HashMap, VecDeque},
+	collections::{HashMap, HashSet, VecDeque},
 	mem,
 };
 
@@ -43,6 +43,7 @@ use crate::{
 		bool_to_int::BoolToIntMap,
 		int_var::{IntVar, IntVarRef, OrderStorage},
 		queue::{PriorityLevel, PriorityQueue},
+		set_var::{SetVar, SetVarRef},
 		solving_context::SolvingContext,
 		trail::{Trail, TrailedInt},
 		BoolView, BoolViewInner, IntLitMeaning, IntView, IntViewInner, SolverConfiguration,
@@ -92,6 +93,8 @@ pub struct State {
 	// ---- Trailed Value Infrastructure (e.g., decision variables) ----
 	/// Storage for the integer variables and
 	pub(crate) int_vars: IndexVec<IntVarRef, IntVar>,
+	/// Storage for the set of integer variables
+	pub(crate) set_vars: IndexVec<SetVarRef, SetVar>,
 	/// Mapping from boolean variables to integer variables
 	pub(crate) bool_to_int: BoolToIntMap,
 	/// Trailed Storage
@@ -130,6 +133,9 @@ pub struct State {
 	pub(crate) propagator_priority: IndexVec<PropRef, PriorityLevel>,
 	/// Flag for whether a propagator is enqueued
 	pub(crate) enqueued: IndexVec<PropRef, bool>,
+	/// Queue of set variables for which the cardinality should be checked
+	pub(crate) card_queue: VecDeque<SetVarRef>,
+	pub(crate) card_enqueued: HashSet<SetVarRef>,
 }
 
 impl PropagatorExtension for Engine {
@@ -153,6 +159,7 @@ impl PropagatorExtension for Engine {
 
 	fn add_reason_clause(&mut self, propagated_lit: RawLit) -> Clause {
 		// Find reason
+		debug!(reason_map = ?self.state.reason_map, "reason map");
 		let reason = self.state.reason_map.remove(&propagated_lit);
 		// Restore the current state to the state when the propagation happened if explaining lazily
 		if matches!(reason, Some(Reason::Lazy(_))) {
@@ -213,9 +220,29 @@ impl PropagatorExtension for Engine {
 				ctx.state.enqueue_int_propagators(r, IntEvent::Fixed, None);
 			}
 		}
+		for r in (0..ctx.state.set_vars.len()).map(SetVarRef::new) {
+			let mut sv = ctx.state.set_vars[r].clone(); // TODO: Would be nice to resolve clone.
+			let conflict = match sv.match_card(r, &mut ctx) {
+				Ok(lits) => {
+					for lit in lits {
+						let prev = ctx.state.trail.assign_lit(lit);
+						debug_assert_eq!(prev, None);
+					}
+					None
+				}
+				Err(clause) => Some(clause),
+			};
+			ctx.state.set_vars[r] = sv;
+			if let Some(conflict) = conflict {
+				ctx.state.conflict = Some(conflict);
+				break;
+			}
+		}
 
 		// Run propgagators to find any conflicts
-		ctx.run_propagators(&mut self.propagators);
+		if ctx.state.conflict.is_none() {
+			ctx.run_propagators(&mut self.propagators);
+		}
 		// No propagation can be triggered (all variables are fixed, so only
 		// conflicts are possible)
 		debug_assert!(self.state.propagation_queue.is_empty());
@@ -471,6 +498,27 @@ impl State {
 		}
 	}
 
+	/// Determine whether assigning a literal triggers an event on a set of
+	/// integer decision variable.
+	///
+	/// Returns `None` if the literal does not trigger an event on an integer
+	/// variable. Otherwise, returns the relevant `SetVarRef` and the `SetEvent`
+	/// that is triggered.
+	fn determine_set_event(&mut self, lit: RawLit) -> Option<(SetVarRef, ())> {
+		if let Some(&(sv, elem)) = self.bool_to_int.set_vars.get(&lit.var()) {
+			if !lit.is_negated() {
+				let try_enqueue = self.set_vars[sv].notify_include_element(&mut self.trail, elem);
+				if try_enqueue && !self.card_enqueued.contains(&sv) {
+					self.card_queue.push_back(sv);
+					let _ = self.card_enqueued.insert(sv);
+				}
+			}
+			Some((sv, ()))
+		} else {
+			None
+		}
+	}
+
 	/// Enqueue all propagators that are activated because the [`IntEvent`]
 	/// `event` has happened to `int_var`.
 	fn enqueue_int_propagators(
@@ -502,6 +550,8 @@ impl State {
 		// Process Integer consequences
 		if let Some((iv, event)) = self.determine_int_event(lit) {
 			self.enqueue_int_propagators(iv, event, skip);
+		} else if let Some((_sv, _event)) = self.determine_set_event(lit) {
+			// self.enqueue_set_propagators(sv, event, skip);
 		}
 	}
 
@@ -527,6 +577,9 @@ impl State {
 		while let Some(p) = self.propagator_queue.pop() {
 			self.enqueued[p] = false;
 		}
+		// Empty card queue
+		self.card_queue.clear();
+		self.card_enqueued.clear();
 		if ARTIFICIAL {
 			return;
 		}

@@ -137,15 +137,23 @@ impl<'a> SolvingContext<'a> {
 	/// Run the propagators in the queue until a propagator detects a conflict,
 	/// returns literals to be propagated by the SAT oracle, or the queue is empty.
 	pub(crate) fn run_propagators(&mut self, propagators: &mut IndexVec<PropRef, BoxedPropagator>) {
-		while let Some(p) = self.state.propagator_queue.pop() {
+		while !self.state.card_queue.is_empty() || !self.state.propagator_queue.is_empty() {
 			debug_assert!(!self.state.failed);
 			debug_assert!(self.state.conflict.is_none());
-			self.state.enqueued[p] = false;
-			self.current_prop = p;
-			let prop = propagators[p].as_mut();
-			let res = prop.propagate(self);
-			self.state.statistics.propagations += 1;
-			self.current_prop = PropRef::new(u32::MAX as usize);
+			let res = if let Some(sv) = self.state.card_queue.pop_front() {
+				// TODO: Remove clone
+				self.state.set_vars[sv].clone().propagate_cardinality(self)
+			} else {
+				let p = self.state.propagator_queue.pop().unwrap();
+				self.state.enqueued[p] = false;
+				self.current_prop = p;
+				let prop = propagators[p].as_mut();
+				let res = prop.propagate(self);
+				self.state.statistics.propagations += 1;
+				self.current_prop = PropRef::new(u32::MAX as usize);
+				res
+			};
+
 			if let Err(Conflict { subject, reason }) = res {
 				let clause: Clause = reason.explain(propagators, self.state, subject);
 				trace!(clause = ?clause.iter().map(|&x| i32::from(x)).collect::<Vec<i32>>(), "conflict detected");

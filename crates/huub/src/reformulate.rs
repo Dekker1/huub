@@ -10,7 +10,7 @@ use pindakaas::{
 	solver::propagation::PropagatingSolver,
 	ClauseDatabase, ClauseDatabaseTools, Encoder, Lit as RawLit, Unsatisfiable,
 };
-use rangelist::IntervalIterator;
+use rangelist::{IntervalIterator, RangeList};
 use thiserror::Error;
 
 use crate::{
@@ -39,6 +39,7 @@ use crate::{
 		engine::{Engine, PropRef},
 		int_var::{EncodingType, IntVar, IntVarRef},
 		queue::PriorityLevel,
+		set_var::SetVar,
 		trail::TrailedInt,
 		BoolView, BoolViewInner, IntView, IntViewInner, SetView, View,
 	},
@@ -572,6 +573,25 @@ impl ReformulationMapBuilder {
 		self.int_map[iv] = Some(view);
 		view
 	}
+	/// Get the representation of a Integer decision variable in the [`Solver`] or
+	/// create it if it does not yet exist.
+	///
+	/// Note that this method will function recursively (toghether with
+	/// [`Self::get_or_create_bool`]) to resolve aliased variables.
+	pub(crate) fn get_or_create_int_decision<Oracle: PropagatingSolver<Engine>>(
+		&mut self,
+		model: &Model,
+		slv: &mut Solver<Oracle>,
+		iv: IntDecision,
+	) -> IntView {
+		use IntDecisionInner::*;
+		match iv.0 {
+			Var(idx) => self.get_or_create_int(model, slv, idx),
+			Const(c) => c.into(),
+			Linear(lt, idx) => self.get_or_create_int(model, slv, idx) * lt.scale + lt.offset,
+			Bool(lt, bv) => self.get_or_create_bool(model, slv, bv) * lt.scale.get() + lt.offset,
+		}
+	}
 
 	/// Get the representation of a Boolean decision variable in the [`Solver`] or
 	/// create it if it does not yet exist.
@@ -632,38 +652,39 @@ impl ReformulationMapBuilder {
 			return v.clone();
 		}
 		let var = &model.set_vars[idx];
-		let vars = slv.new_var_range(var.elem_domain.card());
-		// Add cardinality constraints for the set variables when required
-		if let Some(card) = var.card {
-			let (term, c) = match card.0 {
-				IntDecisionInner::Const(c) => (None, c),
-				IntDecisionInner::Var(idx) => (Some(-self.get_or_create_int(model, slv, idx)), 0),
-				IntDecisionInner::Linear(lt, idx) => {
-					let iv = self.get_or_create_int(model, slv, idx);
-					(Some(iv * -lt.scale + lt.offset), 0)
-				}
-				IntDecisionInner::Bool(lt, bv) => {
-					let bv = self.get_or_create_bool(model, slv, bv);
-					(Some(bv * -lt.scale.get() + lt.offset), 0)
-				}
-			};
-			let terms: Vec<_> = vars
-				.clone()
-				.map(|v| {
-					IntView(IntViewInner::Bool {
-						transformer: LinearTransform::default(),
-						lit: v.into(),
+
+		let card = var
+			.card
+			.map(|c| self.get_or_create_int_decision(model, slv, c));
+
+		let res = if false {
+			let vars = slv.new_var_range(var.elem_domain.card());
+			// Add cardinality constraints for the set variables when required
+			if let Some(card) = card {
+				let (term, c) = match card.0 {
+					IntViewInner::Const(card) => (None, card),
+					card => (Some(-IntView(card)), 0),
+				};
+				let terms: Vec<_> = vars
+					.clone()
+					.map(|v| {
+						IntView(IntViewInner::Bool {
+							transformer: LinearTransform::default(),
+							lit: v.into(),
+						})
 					})
-				})
-				.chain(term)
-				.collect();
-			IntLinearLessEqBounds::new_in(slv, terms.iter().copied().map(|v| -v), -c);
-			IntLinearLessEqBounds::new_in(slv, terms, c);
-		}
-		let res = SetView(SetViewInner::Eager {
-			vars,
-			domain: var.elem_domain.clone(),
-		});
+					.chain(term)
+					.collect();
+				IntLinearLessEqBounds::new_in(slv, terms.iter().copied().map(|v| -v), -c);
+				IntLinearLessEqBounds::new_in(slv, terms, c);
+			}
+			SetView(SetViewInner::Eager {
+				vars,
+				domain: var.elem_domain.clone(),
+			})
+		} else {
+			SetVar::new_in(slv, RangeList::default(), var.elem_domain.clone(), card)
+		};
 		self.set_map[idx] = Some(res.clone());
 		res
 	}

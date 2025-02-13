@@ -5,14 +5,16 @@ pub(crate) mod bool_to_int;
 pub(crate) mod engine;
 pub(crate) mod int_var;
 pub(crate) mod queue;
+pub(crate) mod set_var;
 pub(crate) mod solving_context;
 pub(crate) mod trail;
 
 use std::{
 	fmt::{self, Debug, Display, Formatter},
 	hash::Hash,
+	iter::once,
 	num::NonZeroI32,
-	ops::{Add, Deref, Mul, Neg, Not},
+	ops::{Add, Deref, Mul, Neg, Not, Sub},
 };
 
 use delegate::delegate;
@@ -28,7 +30,7 @@ use pindakaas::{
 	BoolVal, ClauseDatabase, Cnf, Lit as RawLit, Unsatisfiable, Valuation as SatValuation,
 	VarRange,
 };
-use rangelist::RangeList;
+use rangelist::{IntervalIterator, RangeList};
 use tracing::{debug, trace};
 
 use crate::{
@@ -43,8 +45,9 @@ use crate::{
 	solver::{
 		activation_list::IntPropCond,
 		engine::{trace_new_lit, Engine, PropRef, SearchStatistics},
-		int_var::{DirectStorage, IntVarRef, LazyLitDef, OrderStorage},
+		int_var::{DirectStorage, EncodingType, IntVar, IntVarRef, LazyLitDef, OrderStorage},
 		queue::PriorityLevel,
+		set_var::SetVarRef,
 		trail::TrailedInt,
 	},
 	Clause, IntSetVal, IntVal, LinearTransform, Model, NonZeroIntVal, ReformulationError,
@@ -160,6 +163,7 @@ pub(crate) enum SetViewInner {
 		domain: RangeList<IntVal>,
 		vars: VarRange,
 	},
+	Lazy(SetVarRef),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,6 +531,14 @@ impl Neg for IntView {
 	}
 }
 
+impl Sub<IntVal> for IntView {
+	type Output = Self;
+
+	fn sub(self, rhs: IntVal) -> Self::Output {
+		self + (-rhs)
+	}
+}
+
 impl AssumptionChecker for NoAssumptions {
 	fn fail(&self, bv: BoolView) -> bool {
 		matches!(bv, BoolView(BoolViewInner::Const(false)))
@@ -648,6 +660,39 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 									))
 								})
 								.collect_vec()
+						}
+						&SetViewInner::Lazy(sv) => {
+							let store = &self.engine().state.set_vars[sv];
+							let cur_card = store.chosen.len(&self.engine().state.trail) as IntVal;
+							let card_view = if let Some(card) = store.optional_card {
+								card
+							} else {
+								let max_opt_card = store.optional_elements.card() as IntVal;
+								debug_assert_ne!(max_opt_card, 0);
+								let ncard = IntVar::new_in(
+									self,
+									(0..=max_opt_card).into(),
+									EncodingType::Lazy,
+									EncodingType::Lazy,
+								);
+								self.engine_mut().state.set_vars[sv].optional_card = Some(ncard);
+								ncard
+							};
+
+							let card_lit =
+								self.get_int_lit(card_view, IntLitMeaning::NotEq(cur_card));
+							let store = &self.engine().state.set_vars[sv];
+
+							val.iter()
+								.flatten()
+								.flat_map(|elem| {
+									store
+										.vars
+										.get(&elem)
+										.map(|&var| BoolView(BoolViewInner::Lit(!var)))
+								})
+								.chain(once(card_lit))
+								.collect()
 						}
 					}
 				}
@@ -926,6 +971,12 @@ impl<Oracle: PropagatingSolver<Engine>> Solver<Oracle> {
 								ranges.push(lb..=prev);
 							}
 							RangeList::from_iter(ranges)
+						}
+						&SetViewInner::Lazy(sv) => {
+							let var_def = &engine.state.set_vars[sv];
+							let chosen: IntSetVal =
+								var_def.chosen.iter(&engine.state).map(|&e| e..=e).collect();
+							var_def.mandatory_elements.union(&chosen)
 						}
 					}),
 				};

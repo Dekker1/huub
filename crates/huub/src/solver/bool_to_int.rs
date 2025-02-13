@@ -5,7 +5,10 @@ use std::collections::HashMap;
 
 use pindakaas::{Var as RawVar, VarRange};
 
-use crate::{solver::int_var::IntVarRef, IntLitMeaning};
+use crate::{
+	solver::{int_var::IntVarRef, set_var::SetVarRef},
+	IntLitMeaning, IntVal,
+};
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 /// A mapping of Boolean variables to integer variables of which they represent
@@ -16,6 +19,9 @@ pub(crate) struct BoolToIntMap {
 	/// The mapping of lazily created Boolean variables to the integer variables
 	/// and their meanings.
 	lazy: HashMap<RawVar, (IntVarRef, IntLitMeaning)>,
+	/// The mapping of lazy Boolean variables created for lazy set of integer
+	/// decision variables.
+	pub(crate) set_vars: HashMap<RawVar, (SetVarRef, IntVal)>,
 }
 
 impl BoolToIntMap {
@@ -65,5 +71,10 @@ impl BoolToIntMap {
 	pub(crate) fn insert_lazy(&mut self, var: RawVar, iv: IntVarRef, lit: IntLitMeaning) {
 		let x = self.lazy.insert(var, (iv, lit));
 		debug_assert_eq!(x, None, "lazy literal already exists");
+	}
+
+	pub(crate) fn insert_set_var(&mut self, var: RawVar, set_var: SetVarRef, element: IntVal) {
+		let x = self.set_vars.insert(var, (set_var, element));
+		debug_assert_eq!(x, None, "set var literal already exists");
 	}
 }

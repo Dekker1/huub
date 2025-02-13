@@ -266,7 +266,7 @@ where
 							}
 						}
 					}
-					View::Set(_) => todo!(),
+					View::Set(_) => {} // Literals are all created lazily
 				}
 			}
 			*lit_reverse_map.lock().unwrap() = lit_map;

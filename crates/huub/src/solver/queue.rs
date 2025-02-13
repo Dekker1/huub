@@ -56,6 +56,11 @@ impl<E> PriorityQueue<E> {
 		self.storage[i].push(elem);
 	}
 
+	/// Checks if the queue is empty.
+	pub(crate) fn is_empty(&self) -> bool {
+		self.storage.iter().all(|queue| queue.is_empty())
+	}
+
 	/// Pops the highest priority propagator from the queue.
 	pub(crate) fn pop(&mut self) -> Option<E> {
 		for queue in self.storage.iter_mut().rev() {

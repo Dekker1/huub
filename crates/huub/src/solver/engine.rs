@@ -604,28 +604,30 @@ impl PropagatorExtension for Engine {
 
 			if !self.state.failed {
 				if let Some((iv, event)) = iv_event {
-					let activations = mem::take(&mut self.state.int_activation[iv]);
-					for action in activations.activated_by(event) {
-						let prop = match action {
-							ActivationAction::Advise(adv) => {
-								let &AdvisorDef {
-									negated,
-									data,
-									propagator,
-									..
-								} = &self.state.advisors[adv];
-								let enqueue =
-									self.notify_int_advisor(propagator, event, data, negated);
-								if !enqueue {
-									continue;
+					if !self.state.int_activation[iv].is_empty() {
+						let activations = mem::take(&mut self.state.int_activation[iv]);
+						for action in activations.activated_by(event) {
+							let prop = match action {
+								ActivationAction::Advise(adv) => {
+									let &AdvisorDef {
+										negated,
+										data,
+										propagator,
+										..
+									} = &self.state.advisors[adv];
+									let enqueue =
+										self.notify_int_advisor(propagator, event, data, negated);
+									if !enqueue {
+										continue;
+									}
+									propagator
 								}
-								propagator
-							}
-							ActivationAction::Enqueue(prop) => prop,
-						};
-						self.state.propagator_queue.enqueue_propagator(prop);
+								ActivationAction::Enqueue(prop) => prop,
+							};
+							self.state.propagator_queue.enqueue_propagator(prop);
+						}
+						self.state.int_activation[iv] = activations;
 					}
-					self.state.int_activation[iv] = activations;
 				}
 			}
 		}

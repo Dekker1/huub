@@ -231,6 +231,11 @@ impl ActivationList {
 	}
 
 	/// Extend the activation list with another activation list, consuming it.
+	/// Returns true if the activation list contains no propagators.
+	pub(crate) fn is_empty(&self) -> bool {
+		self.activations.is_empty()
+	}
+
 	pub(crate) fn extend(&mut self, other: Self) {
 		for (i, act) in other.activations.into_iter().enumerate() {
 			let i = i as u32;

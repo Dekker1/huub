@@ -33,8 +33,6 @@ pub enum PriorityLevel {
 pub(crate) struct PriorityQueue<E> {
 	/// Internal storage of the queues for each priority level.
 	storage: [VecDeque<E>; 6],
-	/// Bitmask indicating which priority levels are non-empty.
-	mask: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,21 +59,16 @@ impl<E: Idx> PriorityQueue<E> {
 		let i = priority as usize;
 		debug_assert!((0..=5).contains(&i));
 		self.storage[i].push_back(elem);
-		self.mask |= 1 << i;
 	}
 
 	/// Pops the highest priority element from the queue.
 	pub(crate) fn pop(&mut self) -> Option<E> {
-		if self.mask == 0 {
-			return None;
+		for queue in self.storage.iter_mut().rev() {
+			if !queue.is_empty() {
+				return queue.pop_front();
+			}
 		}
-		let i = 7 - self.mask.leading_zeros() as usize;
-		debug_assert!((0..=5).contains(&i));
-		let elem = self.storage[i].pop_front();
-		if self.storage[i].is_empty() {
-			self.mask &= !(1 << i);
-		}
-		elem
+		None
 	}
 }
 
@@ -83,7 +76,6 @@ impl<E> Default for PriorityQueue<E> {
 	fn default() -> Self {
 		Self {
 			storage: Default::default(),
-			mask: 0,
 		}
 	}
 }

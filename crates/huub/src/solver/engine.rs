@@ -372,27 +372,29 @@ impl PropagatorExtension for Engine {
 				}
 				ctx.state.int_vars[r].notify_upper_bound(&mut ctx.state.trail, lb);
 
-				let activation = mem::take(&mut ctx.state.int_activation[r]);
-				for action in activation.activated_by(IntEvent::Fixed) {
-					let prop = match action {
-						ActivationAction::Advise(adv) => {
-							let &AdvisorDef {
-								data, propagator, ..
-							} = &ctx.state.advisors[adv];
-							if !self.propagators[propagator].advise_of_int_change(
-								ctx.state,
-								data,
-								IntEvent::Fixed,
-							) {
-								continue;
+				if !ctx.state.int_activation[r].is_empty() {
+					let activation = mem::take(&mut ctx.state.int_activation[r]);
+					activation.for_each_activated_by(IntEvent::Fixed, |action| {
+						let prop = match action {
+							ActivationAction::Advise(adv) => {
+								let &AdvisorDef {
+									data, propagator, ..
+								} = &ctx.state.advisors[adv];
+								if !self.propagators[propagator].advise_of_int_change(
+									ctx.state,
+									data,
+									IntEvent::Fixed,
+								) {
+									return;
+								}
+								propagator
 							}
-							propagator
-						}
-						ActivationAction::Enqueue(prop) => prop,
-					};
-					ctx.state.propagator_queue.enqueue_propagator(prop);
+							ActivationAction::Enqueue(prop) => prop,
+						};
+						ctx.state.propagator_queue.enqueue_propagator(prop);
+					});
+					ctx.state.int_activation[r] = activation;
 				}
-				ctx.state.int_activation[r] = activation;
 			}
 		}
 
@@ -509,35 +511,34 @@ impl PropagatorExtension for Engine {
 			};
 
 			// Enqueue based on direct literal
-			if !self.state.failed {
-				if let Some(activations) = self
+			if !self.state.failed
+				&& let Some(activations) = self
 					.state
 					.bool_activation
 					.get_mut(&lit.var())
 					.map(mem::take)
-				{
-					for &action in &activations {
-						let prop = match action.into() {
-							ActivationAction::Advise(adv) => {
-								let &AdvisorDef {
-									bool2int,
-									data,
-									propagator,
-									..
-								} = &self.state.advisors[adv];
-								let enqueue = self.notify_lit_advisor(propagator, data, bool2int);
-								if !enqueue {
-									continue;
-								}
-								propagator
+			{
+				for &action in &activations {
+					let prop = match action.into() {
+						ActivationAction::Advise(adv) => {
+							let &AdvisorDef {
+								bool2int,
+								data,
+								propagator,
+								..
+							} = &self.state.advisors[adv];
+							let enqueue = self.notify_lit_advisor(propagator, data, bool2int);
+							if !enqueue {
+								continue;
 							}
-							ActivationAction::Enqueue(prop) => prop,
-						};
-						self.state.propagator_queue.enqueue_propagator(prop);
-					}
-
-					*self.state.bool_activation.get_mut(&lit.var()).unwrap() = activations;
+							propagator
+						}
+						ActivationAction::Enqueue(prop) => prop,
+					};
+					self.state.propagator_queue.enqueue_propagator(prop);
 				}
+
+				*self.state.bool_activation.get_mut(&lit.var()).unwrap() = activations;
 			}
 
 			// Enqueue based on literal meaning in complex type
@@ -602,32 +603,32 @@ impl PropagatorExtension for Engine {
 				Some((iv, event))
 			});
 
-			if !self.state.failed {
-				if let Some((iv, event)) = iv_event {
-					if !self.state.int_activation[iv].is_empty() {
-						let activations = mem::take(&mut self.state.int_activation[iv]);
-						for action in activations.activated_by(event) {
-							let prop = match action {
-								ActivationAction::Advise(adv) => {
-									let &AdvisorDef {
-										negated,
-										data,
-										propagator,
-										..
-									} = &self.state.advisors[adv];
-									let enqueue =
-										self.notify_int_advisor(propagator, event, data, negated);
-									if !enqueue {
-										continue;
-									}
-									propagator
+			if !self.state.failed
+				&& let Some((iv, event)) = iv_event
+			{
+				if !self.state.int_activation[iv].is_empty() {
+					let activations = mem::take(&mut self.state.int_activation[iv]);
+					activations.for_each_activated_by(event, |action| {
+						let prop = match action {
+							ActivationAction::Advise(adv) => {
+								let &AdvisorDef {
+									negated,
+									data,
+									propagator,
+									..
+								} = &self.state.advisors[adv];
+								let enqueue =
+									self.notify_int_advisor(propagator, event, data, negated);
+								if !enqueue {
+									return;
 								}
-								ActivationAction::Enqueue(prop) => prop,
-							};
-							self.state.propagator_queue.enqueue_propagator(prop);
-						}
-						self.state.int_activation[iv] = activations;
-					}
+								propagator
+							}
+							ActivationAction::Enqueue(prop) => prop,
+						};
+						self.state.propagator_queue.enqueue_propagator(prop);
+					});
+					self.state.int_activation[iv] = activations;
 				}
 			}
 		}
@@ -923,19 +924,18 @@ impl State {
 		self.statistics.conflicts += 1;
 
 		// Switch to VSIDS if the number of conflicts exceeds the threshold
-		if let Some(conflicts) = self.config.vsids_after_conflict {
-			if !self.config.vsids_only
-				&& !self.config.toggle_vsids
-				&& self.statistics.conflicts > conflicts as u64
-			{
-				debug_assert!(!self.vsids);
-				self.vsids = true;
-				debug!(
-					vsids = self.vsids,
-					conflicts = self.statistics.conflicts,
-					"enable vsids after N conflicts"
-				);
-			}
+		if let Some(conflicts) = self.config.vsids_after_conflict
+			&& !self.config.vsids_only
+			&& !self.config.toggle_vsids
+			&& self.statistics.conflicts > conflicts as u64
+		{
+			debug_assert!(!self.vsids);
+			self.vsids = true;
+			debug!(
+				vsids = self.vsids,
+				conflicts = self.statistics.conflicts,
+				"enable vsids after N conflicts"
+			);
 		}
 
 		if restart {

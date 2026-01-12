@@ -224,6 +224,11 @@ impl ActivationList {
 		}
 	}
 
+	/// Returns true if the activation list is empty.
+	pub(crate) fn is_empty(&self) -> bool {
+		self.activations.is_empty()
+	}
+
 	/// Iterate over the activation actions triggered by the given event and
 	/// execute the provided function for each of them.
 	///

@@ -603,6 +603,7 @@ impl PropagatorExtension for Engine {
 
 			if !self.state.failed
 				&& let Some((iv, event)) = iv_event
+				&& !self.state.int_activation[iv].is_empty()
 			{
 				let activations = mem::take(&mut self.state.int_activation[iv]);
 				activations.for_each_activated_by(event, |action| {

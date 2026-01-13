@@ -138,6 +138,7 @@ impl From<ActivationAction<ModAdvisor, ConRef>> for ActivationActionS {
 impl ActivationList {
 	/// Add a propagator to the list of propagators to be enqueued based on the
 	/// given condition.
+	#[inline]
 	pub(crate) fn add<A, P>(&mut self, action: ActivationAction<A, P>, condition: IntPropCond)
 	where
 		ActivationAction<A, P>: Into<ActivationActionS>,
@@ -229,6 +230,7 @@ impl ActivationList {
 	///
 	/// This method does not enqueue or advise by itself; it simply delegates
 	/// handling to the provided function `f`.
+	#[inline]
 	pub(crate) fn for_each_activated_by<A, P, F>(&self, event: IntEvent, mut f: F)
 	where
 		ActivationAction<A, P>: From<ActivationActionS>,

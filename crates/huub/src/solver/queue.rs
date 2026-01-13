@@ -55,6 +55,7 @@ pub(crate) struct PropagatorQueue<E: Idx> {
 impl<E: Idx> PriorityQueue<E> {
 	/// Inserts an element into the queue at the end of the given priority
 	/// level.
+	#[inline]
 	pub(crate) fn insert(&mut self, priority: PriorityLevel, elem: E) {
 		let i = priority as usize;
 		debug_assert!((0..=5).contains(&i));
@@ -62,6 +63,7 @@ impl<E: Idx> PriorityQueue<E> {
 	}
 
 	/// Pops the highest priority element from the queue.
+	#[inline]
 	pub(crate) fn pop(&mut self) -> Option<E> {
 		for queue in self.storage.iter_mut().rev() {
 			if !queue.is_empty() {
@@ -82,6 +84,7 @@ impl<E> Default for PriorityQueue<E> {
 
 impl<E: Idx> PropagatorQueue<E> {
 	/// Enqueue a given propagator when it is not already enqueued.
+	#[inline]
 	pub(crate) fn enqueue_propagator(&mut self, prop: E) {
 		if !self.info[prop].enqueued {
 			self.queue.insert(self.info[prop].priority, prop);
@@ -90,6 +93,7 @@ impl<E: Idx> PropagatorQueue<E> {
 	}
 
 	/// Pop a propagator from the queue if there are any.
+	#[inline]
 	pub(crate) fn pop(&mut self) -> Option<E> {
 		self.queue.pop().inspect(|&p| self.info[p].enqueued = false)
 	}

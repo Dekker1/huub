@@ -433,10 +433,8 @@ impl<I> IntAllDifferentBounds<I> {
 			(self.lb_cache[i], self.ub_cache[i]) = v.bounds(ctx);
 		}
 
-		self.min_sorted
-			.sort_unstable_by(|&i, &j| self.lb_cache[i].cmp(&self.lb_cache[j]));
-		self.max_sorted
-			.sort_unstable_by(|&i, &j| (self.ub_cache[i]).cmp(&(self.ub_cache[j])));
+		self.min_sorted.sort_by_key(|&i| self.lb_cache[i]);
+		self.max_sorted.sort_by_key(|&i| self.ub_cache[i] + 1);
 
 		let mut min: IntVal = self.lb_cache[self.min_sorted[0]];
 		let mut max: IntVal = self.ub_cache[self.max_sorted[0]] + 1;

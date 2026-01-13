@@ -9,3 +9,7 @@
 ## 2024-05-23 - Unstable sort vs Stable sort
 **Learning:** `sort_by_key` in Rust (stable sort) allocates a vector of keys. In hot paths (like propagators), this allocation is costly. `sort_unstable_by` does not allocate and is generally faster if stability is not required.
 **Action:** Use `sort_unstable_by` (or `sort_unstable`) when the order of equal elements does not matter, especially in hot loops.
+
+## 2024-05-23 - Inlining hot path methods
+**Learning:** Small, frequently called methods in hot loops (like queue operations and propagator activation) can benefit from `#[inline]` to encourage cross-module inlining and reduce function call overhead.
+**Action:** Add `#[inline]` to critical methods in the solver's core loop (`ActivationList::add`, `PriorityQueue::insert/pop`).

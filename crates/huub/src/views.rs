@@ -7,8 +7,10 @@
 
 mod linear_bool_view;
 mod linear_view;
+mod negated_view;
 mod offset_view;
 
 pub use linear_bool_view::LinearBoolView;
 pub use linear_view::LinearView;
+pub use negated_view::NegatedView;
 pub use offset_view::OffsetView;

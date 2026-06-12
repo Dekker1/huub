@@ -30,7 +30,7 @@ use crate::{
 	},
 	lower::{Lowerer, LowererComplete, LoweringError},
 	model::{
-		Model,
+		ConstraintProvenance, Model,
 		deserialize::{AnyView, Branching, Goal},
 		expressions::{BoolFormula, linear::IntLinearExp},
 		view::{View, boolean::BoolView},
@@ -1195,6 +1195,7 @@ impl<'a> FznModelBuilder<'a> {
 		con: usize,
 	) -> Result<(), FlatZincError> {
 		debug_assert!(!self.processed[con]);
+		self.set_constraint_provenance(con);
 		let c = &self.fzn.constraints[con];
 
 		let add_view = |me: &mut Self,
@@ -1241,6 +1242,9 @@ impl<'a> FznModelBuilder<'a> {
 						&& defined_by[&key] != con
 					{
 						me.extract_view(defined_by, defined_by[&key])?;
+						// Restore the provenance register after the recursive
+						// call processed a different constraint item.
+						me.set_constraint_provenance(con);
 					}
 				}
 				me.arg_bool(arg)
@@ -1254,6 +1258,9 @@ impl<'a> FznModelBuilder<'a> {
 						&& defined_by[&key] != con
 					{
 						me.extract_view(defined_by, defined_by[&key])?;
+						// Restore the provenance register after the recursive
+						// call processed a different constraint item.
+						me.set_constraint_provenance(con);
 					}
 				}
 				me.lit_int(lit)
@@ -1397,6 +1404,8 @@ impl<'a> FznModelBuilder<'a> {
 				self.extract_view(&defined_by, i)?;
 			}
 		}
+		// Clear the provenance register set by `extract_view`.
+		self.prb.set_next_provenance(None);
 		Ok(())
 	}
 
@@ -1552,6 +1561,13 @@ impl<'a> FznModelBuilder<'a> {
 			let FznIdent::Known(KnownIdent::Constraint(ident)) = c.id else {
 				return Err(FlatZincError::UnknownConstraint(c.id.to_string()));
 			};
+
+			// Attribute the constraints posted in this iteration to the current
+			// FlatZinc constraint item.
+			self.prb.set_next_provenance(Some(ConstraintProvenance {
+				name: ident.as_str(),
+				index: i as u32,
+			}));
 
 			let num_args_err = |expected: usize| {
 				Err(FlatZincError::InvalidNumArgs {
@@ -2300,8 +2316,28 @@ impl<'a> FznModelBuilder<'a> {
 				}
 			}
 		}
+		// Clear the provenance register, ensuring that any constraints posted
+		// after this point are not attributed to the last constraint item.
+		self.prb.set_next_provenance(None);
 
 		Ok(())
+	}
+
+	/// Set the [`ConstraintProvenance`] register of the model to the constraint
+	/// item at index `con` in the [`FlatZinc`] instance, so that the
+	/// constraints posted while processing the item can be attributed to it
+	/// when proof logging is enabled.
+	fn set_constraint_provenance(&mut self, con: usize) {
+		let prov =
+			if let FznIdent::Known(KnownIdent::Constraint(ident)) = self.fzn.constraints[con].id {
+				Some(ConstraintProvenance {
+					name: ident.as_str(),
+					index: con as u32,
+				})
+			} else {
+				None
+			};
+		self.prb.set_next_provenance(prov);
 	}
 
 	/// Unify variables in the [`Model`] that are know to be equivalent.

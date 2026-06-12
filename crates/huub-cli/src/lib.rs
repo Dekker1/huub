@@ -22,15 +22,15 @@ macro_rules! outputln {
 }
 
 mod cli;
+mod proof;
 mod trace;
 
 use std::{
 	cell::RefCell,
 	fmt::{self, Debug, Display},
 	io,
-	num::NonZeroI32,
 	sync::{
-		Arc, Mutex,
+		Arc,
 		atomic::{AtomicBool, Ordering},
 	},
 	time::Instant,
@@ -50,12 +50,13 @@ use huub::{
 };
 use mimalloc::MiMalloc;
 use rustc_hash::FxHashMap;
-use tracing::{subscriber::set_default, warn};
+use tracing::{subscriber::set_default, trace, warn};
 
 pub use crate::cli::Cli;
 use crate::{
-	cli::{CliSearchStrategy, CliSearchTrigger},
-	trace::{LitName, VarRef},
+	cli::{CliProofFormat, CliSearchStrategy, CliSearchTrigger},
+	proof::ProofLayer,
+	trace::{LitName, ReverseMaps, VarRef},
 };
 
 /// Status message to output when it is proven that no more/better solutions can
@@ -97,15 +98,27 @@ impl<'a> Cli<'a> {
 	pub fn run(&mut self) -> Result<(), String> {
 		let (trace_writer, ansi_color) = self.trace_writer()?;
 		let trace_targets = self.trace_targets();
-		let lit_reverse_map: Arc<Mutex<FxHashMap<NonZeroI32, LitName>>> = Arc::default();
-		let int_reverse_map: Arc<Mutex<Vec<Option<VarRef>>>> = Arc::default();
+		let maps = ReverseMaps::default();
+		let proof_config = self.proof_config();
+		// DRCP proofs require the meanings of the literals.
+		let needs_lits = matches!(&proof_config, Some(c) if c.format == CliProofFormat::Drcp);
+		let proof_layer = match &proof_config {
+			Some(config) => Some(ProofLayer::new(config, maps.clone()).map_err(|err| {
+				format!(
+					"Unable to open proof file “{}”: {err}",
+					config.path.display()
+				)
+			})?),
+			None => None,
+		};
 		let subscriber = trace::create_subscriber(
 			self.verbose,
 			&trace_targets,
 			trace_writer,
 			ansi_color,
-			Arc::clone(&lit_reverse_map),
-			Arc::clone(&int_reverse_map),
+			&maps,
+			proof_layer,
+			needs_lits,
 		);
 		let _guard = set_default(subscriber);
 
@@ -130,6 +143,7 @@ impl<'a> Cli<'a> {
 			.conditioning(self.cadical.conditioning)
 			.inprocessing(self.cadical.inprocessing)
 			.probing(self.cadical.probing)
+			.proof(self.proof)
 			.reason_eager(self.cadical.reason_eager)
 			.reduce_interval(self.cadical.reduce_interval)
 			.reduce_type(self.cadical.reduce_type.into())
@@ -169,9 +183,9 @@ impl<'a> Cli<'a> {
 			);
 		}
 
-		if self.verbose > 0 {
-			let mut lit_map = lit_reverse_map.lock().unwrap();
-			let mut int_map = int_reverse_map.lock().unwrap();
+		if self.verbose > 0 || needs_lits {
+			let mut lit_map = maps.lit.lock().unwrap();
+			let mut int_map = maps.int.lock().unwrap();
 			debug_assert!(int_map.is_empty());
 			*int_map = vec![None; slv.init_statistics().int_decisions];
 			for (var, v) in &meta.names {
@@ -316,6 +330,25 @@ impl<'a> Cli<'a> {
 			}
 		};
 
+		// Determine the integer decision variable that is optimized, used to
+		// conclude the proof.
+		let proof_obj: Option<(u64, bool)> = self
+			.proof
+			.then(|| {
+				meta.goal.as_ref().and_then(|goal| {
+					let (v, minimize) = match goal {
+						Goal::Minimize(v) => (v, true),
+						Goal::Maximize(v) => (v, false),
+						_ => return None,
+					};
+					// The second value indicates whether the view maps directly to the
+					// integer decision.
+					let (pos, direct) = v.int_reverse_map_info();
+					pos.filter(|_| direct).map(|p| (p as u64, minimize))
+				})
+			})
+			.flatten();
+
 		let (status, obj_val) = match meta.goal {
 			Some(goal) => {
 				if self.all_solutions {
@@ -456,6 +489,24 @@ impl<'a> Cli<'a> {
 				core.push(bound_label);
 			}
 			outputln!(self.stdout, "%%%mzn-core: [{}]", core.join(", "));
+		}
+		// Conclusion of the proof in proof writer. Note that this event is used
+		// instead of the conclusion events of the SAT oracle, to ensure the proof
+		// is concluded even when the search is interrupted.
+		match (proof_obj, obj_val) {
+			(Some((obj_int_var, minimize)), Some(objective)) => trace!(
+				target: "proof",
+				status = ?status,
+				objective,
+				obj_int_var,
+				minimize,
+				"end_proof"
+			),
+			_ => trace!(
+				target: "proof",
+				status = ?status,
+				"end_proof"
+			),
 		}
 		match status {
 			Status::Satisfied => {}

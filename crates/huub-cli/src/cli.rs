@@ -32,6 +32,8 @@ const CLI_SECTION_FLATZINC_STD: &str = "Standard FlatZinc Options";
 const CLI_SECTION_INIT: &str = "Initialization Options";
 /// Help heading used for preprocessing and inprocessing flags.
 const CLI_SECTION_PROCESSING: &str = "Preprocessing/Inprocessing Options";
+/// Help heading used for proof logging flags.
+const CLI_SECTION_PROOF: &str = "Proof Logging Options";
 /// Help heading used for search flags.
 const CLI_SECTION_SEARCH: &str = "Search Options";
 
@@ -161,6 +163,23 @@ pub struct Cli<'a> {
 	#[arg(long, value_name = "usize", default_value_t = Lowerer::DEFAULT_INT_EAGER_LIMIT, help_heading = CLI_SECTION_INIT)]
 	pub(crate) int_eager_limit: usize,
 
+	/// Enable proof logging.
+	///
+	/// The proof is written to the file given by `--proof-output`, or to a file
+	/// named after the input file with the extension of the chosen proof
+	/// format. Note that proof logging will slow down the solving process.
+	#[arg(long, help_heading = CLI_SECTION_PROOF)]
+	pub(crate) proof: bool,
+	/// Path of the file to which the proof is written.
+	///
+	/// Unless `--proof-type` is provided, the proof format is inferred from the
+	/// extension of the given path.
+	#[arg(long, value_name = "FILE", requires = "proof", help_heading = CLI_SECTION_PROOF)]
+	pub(crate) proof_output: Option<PathBuf>,
+	/// The format in which the proof is written.
+	#[arg(long, value_enum, value_name = "format", requires = "proof", help_heading = CLI_SECTION_PROOF)]
+	pub(crate) proof_type: Option<CliProofFormat>,
+
 	/// Control whether the solver may restart, overwritten by `-f`.
 	#[arg(long, action = ArgAction::Set, value_parser = BoolishValueParser::new(), value_name = "bool", default_value_t = Lowerer::DEFAULT_RESTART, help_heading = CLI_SECTION_SEARCH)]
 	pub(crate) restart: bool,
@@ -198,6 +217,22 @@ pub struct Cli<'a> {
 	/// Print version information.
 	#[arg(short = 'V', long = "version", action = clap::ArgAction::Version, hide = true)]
 	pub(crate) version: Option<bool>,
+}
+
+/// Proof formats exposed through the CLI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliProofFormat {
+	/// The Deletion Reverse Constraint Propagation (DRCP) proof format.
+	///
+	/// This format describes the proof in terms of atomic constraints on the
+	/// decision variables. A companion `.lits` file, mapping the literals used
+	/// in the proof to atomic constraints, is produced alongside the proof.
+	Drcp,
+	/// The VeriPB pseudo-Boolean proof format (`.pbp`).
+	///
+	/// This format describes the proof in terms of pseudo-Boolean constraints
+	/// over the Boolean literals created by the solver.
+	Veripb,
 }
 
 /// Clause-database reduction target functions exposed through the CLI.
@@ -238,6 +273,15 @@ pub(crate) enum CliSearchTrigger {
 	Restarts,
 }
 
+/// Resolved proof logging configuration of the command line interface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProofConfig {
+	/// The proof format to produce.
+	pub(crate) format: CliProofFormat,
+	/// The path of the file to which the proof is written.
+	pub(crate) path: PathBuf,
+}
+
 /// Build the styled examples block shown after the generated help output.
 fn cli_examples() -> StyledStr {
 	let styles = Styles::default();
@@ -274,6 +318,41 @@ fn parse_time_limit(s: &str) -> Result<Duration, humantime::DurationError> {
 }
 
 impl<'a> Cli<'a> {
+	/// Resolve the proof logging configuration from the command line arguments.
+	///
+	/// The proof format is determined by `--proof-type` if given, inferred from
+	/// the extension of `--proof-output` otherwise, and defaults to DRCP. The
+	/// proof path defaults to the name of the input file with the extension of
+	/// the proof format.
+	pub(crate) fn proof_config(&self) -> Option<ProofConfig> {
+		if !self.proof {
+			return None;
+		}
+		let format = self
+			.proof_type
+			.or_else(|| {
+				self.proof_output
+					.as_deref()
+					.and_then(CliProofFormat::from_extension)
+			})
+			.unwrap_or(CliProofFormat::Drcp);
+		let path = self.proof_output.clone().unwrap_or_else(|| {
+			let name = self
+				.path
+				.file_name()
+				.map(|name| name.to_string_lossy())
+				.unwrap_or_default();
+			let base = name
+				.strip_suffix(".fzn.json")
+				.or_else(|| name.strip_suffix(".json"))
+				.or_else(|| name.strip_suffix(".fzn"))
+				.unwrap_or(&name);
+			self.path
+				.with_file_name(format!("{base}.{}", format.extension()))
+		});
+		Some(ProofConfig { format, path })
+	}
+
 	/// Collect the active tracing targets after applying user overrides.
 	pub(crate) fn trace_targets(&self) -> Vec<String> {
 		let mut trace_targets = vec!["solver".to_owned(), "flatzinc".to_owned()];
@@ -328,6 +407,9 @@ impl<'a> Cli<'a> {
 			trace_target: self.trace_target,
 			no_trace_target: self.no_trace_target,
 			int_eager_limit: self.int_eager_limit,
+			proof: self.proof,
+			proof_output: self.proof_output,
+			proof_type: self.proof_type,
 			restart: self.restart,
 			search_strategy: self.search_strategy,
 			search_trigger: self.search_trigger,
@@ -381,6 +463,9 @@ impl Debug for Cli<'_> {
 			.field("trace_target", &self.trace_target)
 			.field("no_trace_target", &self.no_trace_target)
 			.field("int_eager_limit", &self.int_eager_limit)
+			.field("proof", &self.proof)
+			.field("proof_output", &self.proof_output)
+			.field("proof_type", &self.proof_type)
 			.field("restart", &self.restart)
 			.field("search_strategy", &self.search_strategy)
 			.field("search_trigger", &self.search_trigger)
@@ -389,6 +474,25 @@ impl Debug for Cli<'_> {
 			.field("log_file", &self.log_file)
 			.field("color", &self.color)
 			.finish_non_exhaustive()
+	}
+}
+
+impl CliProofFormat {
+	/// The file extension conventionally used for the proof format.
+	pub(crate) fn extension(self) -> &'static str {
+		match self {
+			CliProofFormat::Drcp => "drcp",
+			CliProofFormat::Veripb => "pbp",
+		}
+	}
+
+	/// Infer a proof format from the extension of the given path, if possible.
+	fn from_extension(path: &std::path::Path) -> Option<Self> {
+		match path.extension()?.to_str()? {
+			"drcp" => Some(CliProofFormat::Drcp),
+			"pbp" => Some(CliProofFormat::Veripb),
+			_ => None,
+		}
 	}
 }
 
@@ -409,7 +513,7 @@ mod tests {
 	use clap::ColorChoice;
 	use huub::lower::{Lowerer, ReduceType};
 
-	use crate::cli::{Cli, CliReduceType};
+	use crate::cli::{Cli, CliProofFormat, CliReduceType};
 
 	#[test]
 	fn bool_args() {
@@ -492,6 +596,98 @@ mod tests {
 		assert_eq!(cli.path, PathBuf::from("-a-o"));
 		assert!(!cli.all_optimal);
 		assert!(!cli.all_solutions);
+	}
+
+	#[test]
+	fn proof_args() {
+		// Proof logging is disabled by default.
+		let cli = Cli::try_parse_from(["huub", "instance.fzn.json"]).unwrap();
+		assert!(!cli.proof);
+		assert_eq!(cli.proof_config(), None);
+
+		// The proof format defaults to DRCP, and the proof path defaults to the
+		// input file name with the proof format extension.
+		let cli = Cli::try_parse_from(["huub", "--proof", "dir/instance.fzn.json"]).unwrap();
+		let config = cli.proof_config().unwrap();
+		assert_eq!(config.format, CliProofFormat::Drcp);
+		assert_eq!(config.path, PathBuf::from("dir/instance.drcp"));
+
+		// `--proof-type` overrides the proof format and the default extension.
+		let cli = Cli::try_parse_from([
+			"huub",
+			"--proof",
+			"--proof-type",
+			"veripb",
+			"instance.fzn.json",
+		])
+		.unwrap();
+		let config = cli.proof_config().unwrap();
+		assert_eq!(config.format, CliProofFormat::Veripb);
+		assert_eq!(config.path, PathBuf::from("instance.pbp"));
+
+		// The proof format is inferred from the extension of `--proof-output`.
+		let cli = Cli::try_parse_from([
+			"huub",
+			"--proof",
+			"--proof-output",
+			"out.pbp",
+			"instance.fzn.json",
+		])
+		.unwrap();
+		let config = cli.proof_config().unwrap();
+		assert_eq!(config.format, CliProofFormat::Veripb);
+		assert_eq!(config.path, PathBuf::from("out.pbp"));
+
+		// `--proof-type` takes precedence over the extension of
+		// `--proof-output`.
+		let cli = Cli::try_parse_from([
+			"huub",
+			"--proof",
+			"--proof-output",
+			"out.pbp",
+			"--proof-type",
+			"drcp",
+			"instance.fzn.json",
+		])
+		.unwrap();
+		let config = cli.proof_config().unwrap();
+		assert_eq!(config.format, CliProofFormat::Drcp);
+		assert_eq!(config.path, PathBuf::from("out.pbp"));
+
+		// An unknown extension falls back to the default DRCP format.
+		let cli = Cli::try_parse_from([
+			"huub",
+			"--proof",
+			"--proof-output",
+			"out.proof",
+			"instance.fzn.json",
+		])
+		.unwrap();
+		let config = cli.proof_config().unwrap();
+		assert_eq!(config.format, CliProofFormat::Drcp);
+		assert_eq!(config.path, PathBuf::from("out.proof"));
+
+		// A `.opb` extension denotes the pseudo-Boolean problem format, not a
+		// proof, so it is not inferred as a proof format and falls back to DRCP.
+		let cli = Cli::try_parse_from([
+			"huub",
+			"--proof",
+			"--proof-output",
+			"out.opb",
+			"instance.fzn.json",
+		])
+		.unwrap();
+		let config = cli.proof_config().unwrap();
+		assert_eq!(config.format, CliProofFormat::Drcp);
+		assert_eq!(config.path, PathBuf::from("out.opb"));
+
+		// The proof options require the `--proof` flag.
+		let err = Cli::try_parse_from(["huub", "--proof-output", "out.drcp", "instance.fzn.json"])
+			.unwrap_err();
+		assert!(err.to_string().contains("--proof"));
+		let err =
+			Cli::try_parse_from(["huub", "--proof-type", "drcp", "instance.fzn.json"]).unwrap_err();
+		assert!(err.to_string().contains("--proof"));
 	}
 
 	#[test]

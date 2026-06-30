@@ -157,6 +157,12 @@ impl<'a> Cli<'a> {
 			Err(FlatZincError::ReformulationError(
 				LoweringError::Simplification(_) | LoweringError::Lowering(_),
 			)) => {
+				// End the proof even if found to be UNSAT at the reformulation stage
+				trace!(
+					target: "proof",
+					status = ?Status::Unsatisfiable,
+					"end_proof"
+				);
 				outputln!(self.stdout, "{}", FZN_UNSATISFIABLE);
 				return Ok(());
 			}

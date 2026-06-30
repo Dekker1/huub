@@ -366,6 +366,28 @@ impl VeripbWriterLayer {
 	fn process(&self, event: &ProofEvent) -> io::Result<()> {
 		let mut out = self.out.lock().unwrap();
 		match event.message.as_str() {
+			"add_assumption_clause" => {
+				// An assumption clause is a negated conjunction of
+				// assumptions, so we need to assert the negation in the proof.
+				write!(out, "@c{} a ", event.id)?;
+				for &l in &event.clause {
+					if l >= 0 {
+						write!(out, "1 ~x{l} ")?;
+					} else {
+						write!(out, "1 x{} ", -l)?;
+					}
+				}
+				write!(out, ">= {}", event.clause.len())?;
+				// Assumptions should be annotated with the corresponding
+				// huub_assumption in the input.
+				if !event.hint.is_empty() {
+					write!(out, " :: {}", event.hint)?;
+					if !event.constraints.is_empty() {
+						write!(out, "{:?}", event.constraints)?;
+					}
+				}
+				writeln!(out, ";")
+			}
 			"add_original_clause" => {
 				write!(out, "@c{} a ", event.id)?;
 				for &l in &event.clause {
@@ -386,7 +408,7 @@ impl VeripbWriterLayer {
 				}
 				writeln!(out, ";")
 			}
-			"add_derived_clause" | "add_assumption_clause" => {
+			"add_derived_clause" => {
 				// Derived clauses are justified by a reverse unit propagation
 				// resolution chain over their antecedents.
 				write!(out, "@c{} pol ", event.id)?;

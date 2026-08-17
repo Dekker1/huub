@@ -11,7 +11,7 @@ use crate::{
 	IntSet, IntVal,
 	actions::{
 		IntAnalyzeActions, IntDecisionActions, IntExplanationActions, IntInspectionActions,
-		IntPropagationActions, PropagationContext, ReasoningContext,
+		IntPropagationActions, IntViewTransform, PropagationContext, ReasoningContext,
 	},
 	solver::{
 		IntLitMeaning, Polarity,
@@ -244,6 +244,15 @@ where
 		reason: impl FnOnce(&mut Ctx, &mut Ctx::ReasonSink<'_>),
 	) -> Result<(), Ctx::Conflict> {
 		self.var.tighten_min(ctx, val - self.offset, reason)
+	}
+}
+
+impl<Var> IntViewTransform for OffsetView<IntVal, Var>
+where
+	Var: IntViewTransform,
+{
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		self.var.transform_decision_val(val) + self.offset
 	}
 }
 

@@ -8,6 +8,7 @@
 use itertools::Itertools;
 
 use crate::{
+	IntVal,
 	actions::{InitActions, IntEvent, IntPropCond, PostingActions, ReasonActions, ReasoningEngine},
 	constraints::{IntSolverActions, Propagator},
 	solver::engine::Engine,
@@ -64,6 +65,7 @@ where
 		_: &mut E::NotificationContext<'_>,
 		data: u64,
 		event: IntEvent,
+		_: Option<IntVal>,
 	) -> bool {
 		// We remember that the decision at index `data` has been fixed to a value.
 		debug_assert_eq!(event, IntEvent::Fixed);

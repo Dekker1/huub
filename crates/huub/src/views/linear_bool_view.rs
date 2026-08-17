@@ -17,8 +17,8 @@ use crate::{
 	actions::{
 		BoolAnalyzeActions, BoolInspectionActions, BoolOperations, BoolPropagationActions,
 		BoolSimplificationActions, IntAnalyzeActions, IntDecisionActions, IntExplanationActions,
-		IntInspectionActions, IntPropagationActions, IntSimplificationActions, PropagationActions,
-		PropagationContext, ReasoningContext,
+		IntInspectionActions, IntPropagationActions, IntSimplificationActions, IntViewTransform,
+		PropagationActions, PropagationContext, ReasoningContext,
 	},
 	constraints::NO_REASON,
 	helpers::{div_ceil, div_floor},
@@ -461,6 +461,17 @@ where
 			}
 			(false, false) => Err(ctx.declare_conflict(NO_REASON)),
 		}
+	}
+}
+
+impl<Var> IntViewTransform for LinearBoolView<NonZero<IntVal>, IntVal, Var>
+where
+	Var: BoolOperations,
+{
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		// The underlying Boolean decision takes the value zero or one.
+		debug_assert!(val == 0 || val == 1);
+		self.transform_val(val)
 	}
 }
 

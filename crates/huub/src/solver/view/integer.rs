@@ -10,7 +10,8 @@ use crate::{
 	IntSet, IntVal,
 	actions::{
 		BoolInspectionActions, BoolPropagationActions, IntDecisionActions, IntExplanationActions,
-		IntInspectionActions, IntPropagationActions, PropagationActions, ReasoningContext,
+		IntInspectionActions, IntPropagationActions, IntViewTransform, PropagationActions,
+		ReasoningContext,
 	},
 	solver::{
 		Decision, IntLitMeaning, View,
@@ -264,6 +265,16 @@ where
 			IntView::Linear(lin) => lin.tighten_min(ctx, val, reason),
 			IntView::Bool(lin) => lin.tighten_min(ctx, val, reason),
 			IntView::Const(c) => c.tighten_min(ctx, val, reason),
+		}
+	}
+}
+
+impl IntViewTransform for View<IntVal> {
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		match self.0 {
+			IntView::Const(i) => i,
+			IntView::Linear(lin) => lin.transform_decision_val(val),
+			IntView::Bool(lin) => lin.transform_decision_val(val),
 		}
 	}
 }

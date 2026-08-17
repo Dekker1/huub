@@ -99,6 +99,7 @@ where
 		ctx: &mut E::NotificationContext<'_>,
 		i: u64,
 		_: IntEvent,
+		_: Option<IntVal>,
 	) -> bool {
 		let i = i as usize;
 		self.actions_list.push(i);

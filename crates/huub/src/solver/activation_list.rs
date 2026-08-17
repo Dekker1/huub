@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::{
+	IntVal,
 	actions::{IntEvent, IntPropCond},
 	model::{self, ConRef},
 	solver::engine::{self, PropRef},
@@ -57,6 +58,22 @@ pub(crate) struct ActivationList {
 	/// The index for the first propagator to be activated when an event
 	/// triggers [`IntPropCond::Domain`].
 	domain_idx: u32,
+}
+
+/// A change to the domain of an integer decision variable, carrying enough
+/// information to describe it to any subscriber.
+///
+/// The values are in the value space of the decision variable itself, not of
+/// any view a subscriber may have registered with.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct IntChange {
+	/// The event describing the change as a whole.
+	pub(crate) event: IntEvent,
+	/// The bounds of the decision variable immediately before the change.
+	pub(crate) previous: (IntVal, IntVal),
+	/// The value the change removed from the domain, when it removed exactly
+	/// one.
+	pub(crate) removed: Option<IntVal>,
 }
 
 impl From<ActivationActionS> for ActivationAction<engine::AdvRef, PropRef> {
@@ -164,64 +181,134 @@ impl ActivationList {
 		};
 	}
 
+	/// The propagation condition that the subscription at the given index was
+	/// registered with.
+	fn condition_at(&self, i: u32) -> IntPropCond {
+		if i < self.lower_bound_idx {
+			IntPropCond::Fixed
+		} else if i < self.upper_bound_idx {
+			IntPropCond::LowerBound
+		} else if i < self.bounds_idx {
+			IntPropCond::UpperBound
+		} else if i < self.domain_idx {
+			IntPropCond::Bounds
+		} else {
+			IntPropCond::Domain
+		}
+	}
+
 	/// Extend the activation list with another activation list, consuming it.
 	pub(crate) fn extend(&mut self, other: Self) {
-		for (i, act) in other.activations.into_iter().enumerate() {
-			let i = i as u32;
-			let act: ActivationAction<engine::AdvRef, PropRef> = act.into();
-			self.add(
-				act,
-				if i < other.lower_bound_idx {
-					IntPropCond::Fixed
-				} else if i < other.upper_bound_idx {
-					IntPropCond::LowerBound
-				} else if i < other.bounds_idx {
-					IntPropCond::UpperBound
-				} else if i < other.domain_idx {
-					IntPropCond::Bounds
-				} else {
-					IntPropCond::Domain
-				},
-			);
+		for (i, act) in other.activations.iter().enumerate() {
+			let act: ActivationAction<engine::AdvRef, PropRef> = (*act).into();
+			self.add(act, other.condition_at(i as u32));
 		}
 	}
 
 	/// Iterate over the activation actions triggered by the given event and
-	/// execute the provided function for each of them.
+	/// execute the provided function for each of them, together with the
+	/// [`IntPropCond`] that the subscription was registered with.
+	///
+	/// The condition is what allows a caller to describe the change in the
+	/// terms the subscriber asked about: a subscription on
+	/// [`IntPropCond::LowerBound`] wants to hear about the minimum even when
+	/// the change that triggered it fixed the variable outright.
 	///
 	/// This method does not enqueue or advise by itself; it simply delegates
 	/// handling to the provided function `f`.
 	pub(crate) fn for_each_activated_by<A, P, F>(&self, event: IntEvent, mut f: F)
 	where
 		ActivationAction<A, P>: From<ActivationActionS>,
-		F: FnMut(ActivationAction<A, P>),
+		F: FnMut(ActivationAction<A, P>, IntPropCond),
 	{
-		if event == IntEvent::LowerBound {
-			for &act in
-				&self.activations[self.lower_bound_idx as usize..self.upper_bound_idx as usize]
-			{
-				f(act.into());
+		let mut run = |from: u32, to: u32, condition: IntPropCond| {
+			for &act in &self.activations[from as usize..to as usize] {
+				f(act.into(), condition);
 			}
-			for &act in &self.activations[self.bounds_idx as usize..] {
-				f(act.into());
-			}
-		} else {
-			let start = match event {
-				IntEvent::Fixed => 0,
-				IntEvent::Bounds => self.lower_bound_idx as usize,
-				IntEvent::UpperBound => self.upper_bound_idx as usize,
-				IntEvent::LowerBound => unreachable!(),
-				IntEvent::Domain => self.domain_idx as usize,
-			};
-			for &act in &self.activations[start..] {
-				f(act.into());
-			}
+		};
+		let len = self.activations.len() as u32;
+		if event == IntEvent::Fixed {
+			run(0, self.lower_bound_idx, IntPropCond::Fixed);
 		}
+		if matches!(
+			event,
+			IntEvent::Fixed | IntEvent::Bounds | IntEvent::LowerBound
+		) {
+			run(
+				self.lower_bound_idx,
+				self.upper_bound_idx,
+				IntPropCond::LowerBound,
+			);
+		}
+		if matches!(
+			event,
+			IntEvent::Fixed | IntEvent::Bounds | IntEvent::UpperBound
+		) {
+			run(
+				self.upper_bound_idx,
+				self.bounds_idx,
+				IntPropCond::UpperBound,
+			);
+		}
+		if event != IntEvent::Domain {
+			run(self.bounds_idx, self.domain_idx, IntPropCond::Bounds);
+		}
+		run(self.domain_idx, len, IntPropCond::Domain);
 	}
 
 	/// Return the number of subscriptions to the decision variable.
 	pub(crate) fn subscription_count(&self) -> u32 {
 		self.activations.len() as u32
+	}
+}
+
+impl IntChange {
+	/// Describe this change to a subscriber that registered with `condition`:
+	/// the event to report, and the value that the change replaced.
+	///
+	/// A subscriber that asked about a single bound is always told about that
+	/// bound, even when the change fixed the variable outright. Only a
+	/// subscriber that asked to hear about fixing (or about both bounds at
+	/// once) receives [`IntEvent::Fixed`] or [`IntEvent::Bounds`], and those
+	/// cannot attribute the change to a single value.
+	///
+	/// `condition` is the condition the subscription is stored under, which is
+	/// already expressed for the decision variable rather than the subscriber's
+	/// view. Set `negated` for a subscriber whose view reverses the two bounds,
+	/// so that the reported event is the one it expects. The value is left in
+	/// the decision variable's value space for the subscriber to translate.
+	pub(crate) fn advice(
+		&self,
+		condition: IntPropCond,
+		negated: bool,
+	) -> (IntEvent, Option<IntVal>) {
+		let (event, previous) = match condition {
+			IntPropCond::Fixed => (IntEvent::Fixed, None),
+			IntPropCond::LowerBound => (IntEvent::LowerBound, Some(self.previous.0)),
+			IntPropCond::UpperBound => (IntEvent::UpperBound, Some(self.previous.1)),
+			IntPropCond::Bounds | IntPropCond::Domain => match self.event {
+				IntEvent::LowerBound => (IntEvent::LowerBound, Some(self.previous.0)),
+				IntEvent::UpperBound => (IntEvent::UpperBound, Some(self.previous.1)),
+				IntEvent::Domain => (IntEvent::Domain, self.removed),
+				IntEvent::Fixed | IntEvent::Bounds => (self.event, None),
+			},
+		};
+		let event = match event {
+			IntEvent::LowerBound if negated => IntEvent::UpperBound,
+			IntEvent::UpperBound if negated => IntEvent::LowerBound,
+			e => e,
+		};
+		(event, previous)
+	}
+
+	/// A change that cannot be attributed to a single value, such as one that
+	/// coalesces several separate changes.
+	pub(crate) fn unattributed(event: IntEvent, previous: (IntVal, IntVal)) -> Self {
+		Self {
+			event,
+			previous,
+			removed: None,
+		}
 	}
 }
 
@@ -276,9 +363,12 @@ mod tests {
 				activation_list.add(ActivationAction::Enqueue(*prop), *cond);
 			}
 			let mut fixed = FxHashSet::default();
-			activation_list.for_each_activated_by(IntEvent::Fixed, |a: ActivationAction<_, _>| {
-				fixed.insert(a);
-			});
+			activation_list.for_each_activated_by(
+				IntEvent::Fixed,
+				|a: ActivationAction<_, _>, _| {
+					fixed.insert(a);
+				},
+			);
 			assert_eq!(
 				fixed,
 				FxHashSet::from_iter([
@@ -290,9 +380,12 @@ mod tests {
 				])
 			);
 			let mut bounds = FxHashSet::default();
-			activation_list.for_each_activated_by(IntEvent::Bounds, |a: ActivationAction<_, _>| {
-				bounds.insert(a);
-			});
+			activation_list.for_each_activated_by(
+				IntEvent::Bounds,
+				|a: ActivationAction<_, _>, _| {
+					bounds.insert(a);
+				},
+			);
 			assert_eq!(
 				bounds,
 				FxHashSet::from_iter([
@@ -305,7 +398,7 @@ mod tests {
 			let mut lower_bound = FxHashSet::default();
 			activation_list.for_each_activated_by(
 				IntEvent::LowerBound,
-				|a: ActivationAction<_, _>| {
+				|a: ActivationAction<_, _>, _| {
 					lower_bound.insert(a);
 				},
 			);
@@ -320,7 +413,7 @@ mod tests {
 			let mut upper_bound = FxHashSet::default();
 			activation_list.for_each_activated_by(
 				IntEvent::UpperBound,
-				|a: ActivationAction<_, _>| {
+				|a: ActivationAction<_, _>, _| {
 					upper_bound.insert(a);
 				},
 			);
@@ -333,9 +426,12 @@ mod tests {
 				])
 			);
 			let mut domain = FxHashSet::default();
-			activation_list.for_each_activated_by(IntEvent::Domain, |a: ActivationAction<_, _>| {
-				domain.insert(a);
-			});
+			activation_list.for_each_activated_by(
+				IntEvent::Domain,
+				|a: ActivationAction<_, _>, _| {
+					domain.insert(a);
+				},
+			);
 			assert_eq!(
 				domain,
 				FxHashSet::from_iter([ActivationAction::Enqueue(PropRef::new(4))])

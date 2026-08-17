@@ -8,7 +8,7 @@ use crate::{
 	IntSet, IntVal,
 	actions::{
 		IntDecisionActions, IntEvent, IntInspectionActions, IntPropCond, IntPropagationActions,
-		IntSimplificationActions, ReasoningContext,
+		IntSimplificationActions, IntViewTransform, ReasoningContext,
 	},
 	constraints::{Conflict, NO_REASON, Nogood},
 	model::{
@@ -349,6 +349,12 @@ impl<'a> IntSimplificationActions<SimplificationContext<'a>> for Decision<IntVal
 	}
 }
 
+impl IntViewTransform for Decision<IntVal> {
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		val
+	}
+}
+
 impl IntDecision {
 	/// Create a new integer variable definition with the given domain.
 	pub(crate) fn with_domain(dom: IntSet) -> Self {
@@ -411,7 +417,7 @@ impl Resolved<Decision<IntVal>> {
 					let model = &mut *ctx.0;
 					constraints.for_each_activated_by(
 						IntEvent::Fixed,
-						|act: ActivationAction<AdvRef, ConRef>| {
+						|act: ActivationAction<AdvRef, ConRef>, _| {
 							if let ActivationAction::Advise(adv) = act {
 								let def = &mut model.advisors[adv.index()];
 								def.bool2int = true;
@@ -442,7 +448,7 @@ impl Resolved<Decision<IntVal>> {
 					let model = &mut *ctx.0;
 					constraints.for_each_activated_by(
 						IntEvent::Fixed,
-						|act: ActivationAction<AdvRef, ConRef>| {
+						|act: ActivationAction<AdvRef, ConRef>, _| {
 							if let ActivationAction::Advise(adv) = act {
 								let def = &mut model.advisors[adv.index()];
 								def.bool2int = true;
@@ -488,18 +494,23 @@ impl Resolved<Decision<IntVal>> {
 		let max = *diff.max().unwrap();
 		if min == max {
 			ctx.0.int_vars[self.idx()].domain = Domain::Alias(min.into());
-			ctx.0.int_events.insert(self.0.0, IntEvent::Fixed);
+			ctx.0
+				.record_int_event(self.0.0, IntEvent::Fixed, (dom_min, dom_max), None);
 		} else {
-			let model = &mut *ctx.0;
-			let entry = model.int_events.entry(self.0.0).or_insert(IntEvent::Domain);
+			let mut event = IntEvent::Domain;
 			if dom_min != min {
-				*entry += IntEvent::LowerBound;
+				event += IntEvent::LowerBound;
 			}
 			if dom_max != max {
-				*entry += IntEvent::UpperBound;
+				event += IntEvent::UpperBound;
 			}
-
-			model.int_vars[self.idx()].domain = Domain::Domain(diff);
+			// Only the removal of a single interior value can be attributed to one
+			// value.
+			let removed = (event == IntEvent::Domain && values.min() == values.max())
+				.then(|| *values.min().unwrap());
+			ctx.0
+				.record_int_event(self.0.0, event, (dom_min, dom_max), removed);
+			ctx.0.int_vars[self.idx()].domain = Domain::Domain(diff);
 		};
 		Ok(())
 	}
@@ -516,9 +527,10 @@ impl Resolved<Decision<IntVal>> {
 			unreachable!()
 		};
 		if dom.contains(&val) {
+			let previous = (*dom.min().unwrap(), *dom.max().unwrap());
 			let model = &mut *ctx.0;
 			model.int_vars[self.idx()].domain = Domain::Alias(val.into());
-			model.int_events.insert(self.0.0, IntEvent::Fixed);
+			model.record_int_event(self.0.0, IntEvent::Fixed, previous, None);
 			Ok(())
 		} else {
 			Err(ctx.make_conflict(Some(View(BoolView::IntEq(self.0, val))), reason))
@@ -560,18 +572,19 @@ impl Resolved<Decision<IntVal>> {
 		let max = *intersect.max().unwrap();
 		if min == max {
 			ctx.0.int_vars[self.idx()].domain = Domain::Alias(min.into());
-			ctx.0.int_events.insert(self.0.0, IntEvent::Fixed);
+			ctx.0
+				.record_int_event(self.0.0, IntEvent::Fixed, (dom_min, dom_max), None);
 		} else {
-			let model = &mut *ctx.0;
-			let entry = model.int_events.entry(self.0.0).or_insert(IntEvent::Domain);
+			let mut event = IntEvent::Domain;
 			if dom_min != min {
-				*entry += IntEvent::LowerBound;
+				event += IntEvent::LowerBound;
 			}
 			if dom_max != max {
-				*entry += IntEvent::UpperBound;
+				event += IntEvent::UpperBound;
 			}
-
-			model.int_vars[self.idx()].domain = Domain::Domain(intersect);
+			ctx.0
+				.record_int_event(self.0.0, event, (dom_min, dom_max), None);
+			ctx.0.int_vars[self.idx()].domain = Domain::Domain(intersect);
 		}
 		Ok(())
 	}
@@ -600,18 +613,15 @@ impl Resolved<Decision<IntVal>> {
 		let Domain::Domain(dom) = &mut model.int_vars[self.idx()].domain else {
 			unreachable!()
 		};
+		let previous = (*dom.min().unwrap(), *dom.max().unwrap());
 		dom.tighten_max(val);
 		let min = *dom.min().unwrap();
 		let fixed = min == *dom.max().unwrap();
 		if fixed {
 			model.int_vars[self.idx()].domain = Domain::Alias(min.into());
-			model.int_events.insert(self.0.0, IntEvent::Fixed);
+			model.record_int_event(self.0.0, IntEvent::Fixed, previous, None);
 		} else {
-			model
-				.int_events
-				.entry(self.0.0)
-				.and_modify(|v| *v += IntEvent::UpperBound)
-				.or_insert(IntEvent::UpperBound);
+			model.record_int_event(self.0.0, IntEvent::UpperBound, previous, None);
 		};
 		Ok(())
 	}
@@ -640,18 +650,15 @@ impl Resolved<Decision<IntVal>> {
 		let Domain::Domain(dom) = &mut model.int_vars[self.idx()].domain else {
 			unreachable!()
 		};
+		let previous = (*dom.min().unwrap(), *dom.max().unwrap());
 		dom.tighten_min(val);
 		let min = *dom.min().unwrap();
 		let fixed = min == *dom.max().unwrap();
 		if fixed {
 			model.int_vars[self.idx()].domain = Domain::Alias(min.into());
-			model.int_events.insert(self.0.0, IntEvent::Fixed);
+			model.record_int_event(self.0.0, IntEvent::Fixed, previous, None);
 		} else {
-			model
-				.int_events
-				.entry(self.0.0)
-				.and_modify(|e| *e += IntEvent::LowerBound)
-				.or_insert(IntEvent::LowerBound);
+			model.record_int_event(self.0.0, IntEvent::LowerBound, previous, None);
 		};
 		Ok(())
 	}
@@ -830,5 +837,11 @@ impl IntInspectionActions<SimplificationContext<'_>> for Resolved<Decision<IntVa
 
 	fn val(&self, ctx: &SimplificationContext<'_>) -> Option<IntVal> {
 		self.val(&*ctx.0)
+	}
+}
+
+impl IntViewTransform for Resolved<Decision<IntVal>> {
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		val
 	}
 }

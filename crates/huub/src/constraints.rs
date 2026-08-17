@@ -33,7 +33,7 @@ use crate::{
 		BoolAnalyzeActions, BoolInitActions, BoolInspectionActions, BoolPropagationActions,
 		BoolSimplificationActions, IntAnalyzeActions, IntEvent, IntExplanationActions,
 		IntInitActions, IntInspectionActions, IntPropagationActions, IntSimplificationActions,
-		PropagationContext, ReasoningEngine,
+		IntViewTransform, PropagationContext, ReasoningEngine,
 	},
 	lower::{LoweringContext, LoweringError},
 	model::{self, Model},
@@ -158,7 +158,8 @@ where
 	Self: for<'a> IntInitActions<E::InitializationContext<'a>>
 		+ for<'a> IntExplanationActions<E::ExplanationContext<'a>>
 		+ for<'a> IntInspectionActions<E::NotificationContext<'a>>
-		+ for<'a> IntPropagationActions<E::PropagationContext<'a>>,
+		+ for<'a> IntPropagationActions<E::PropagationContext<'a>>
+		+ IntViewTransform,
 {
 }
 
@@ -214,15 +215,32 @@ pub trait Propagator<E: ReasoningEngine + ?Sized>: Debug + DynClone + 'static {
 	/// Advises the propagator that an integer decision view has changed with
 	/// the associated data given when registering the advisor. If the advisor
 	/// returns `true`, then the propagator will be enqueued.
+	///
+	/// The `event` describes the change in the terms the advisor subscribed
+	/// with: an advisor registered on
+	/// [`IntPropCond::LowerBound`](crate::actions::IntPropCond::LowerBound) is
+	/// told about the minimum even when the change fixed the variable
+	/// outright, and never receives [`IntEvent::Fixed`].
+	///
+	/// `previous` is the value that the change replaced, which is the minimum
+	/// for [`IntEvent::LowerBound`], the maximum for [`IntEvent::UpperBound`],
+	/// and the removed value for [`IntEvent::Domain`]. It is `None` when the
+	/// change cannot be attributed to a single value, which is the case for
+	/// [`IntEvent::Fixed`] and [`IntEvent::Bounds`]. The value is in the value
+	/// space of the *decision variable*, so a propagator that subscribed with a
+	/// view must translate it with
+	/// [`IntViewTransform::transform_decision_val`].
 	fn advise_of_int_change(
 		&mut self,
 		context: &mut E::NotificationContext<'_>,
 		data: u64,
 		event: IntEvent,
+		previous: Option<IntVal>,
 	) -> bool {
 		let _ = context;
 		let _ = event;
 		let _ = data;
+		let _ = previous;
 		unreachable!("propagator did not provide an integer advisor implementation")
 	}
 
@@ -433,7 +451,8 @@ where
 	I: for<'a> IntInitActions<E::InitializationContext<'a>>
 		+ for<'a> IntExplanationActions<E::ExplanationContext<'a>>
 		+ for<'a> IntInspectionActions<E::NotificationContext<'a>>
-		+ for<'a> IntPropagationActions<E::PropagationContext<'a>>,
+		+ for<'a> IntPropagationActions<E::PropagationContext<'a>>
+		+ IntViewTransform,
 {
 }
 

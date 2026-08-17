@@ -11,8 +11,8 @@ use crate::{
 	IntSet, IntVal,
 	actions::{
 		BoolPropagationActions, IntAnalyzeActions, IntDecisionActions, IntExplanationActions,
-		IntInspectionActions, IntPropagationActions, IntSimplificationActions, PropagationActions,
-		PropagationContext, ReasonActions, ReasoningContext,
+		IntInspectionActions, IntPropagationActions, IntSimplificationActions, IntViewTransform,
+		PropagationActions, PropagationContext, ReasonActions, ReasoningContext,
 	},
 	constraints::{Conflict, NO_REASON, Nogood, int_linear::IntEq},
 	model::{
@@ -436,6 +436,12 @@ impl IntInspectionActions<SimplificationContext<'_>> for Resolved<View<IntVal>> 
 
 	fn val(&self, ctx: &SimplificationContext<'_>) -> Option<IntVal> {
 		self.val(&*ctx.0)
+	}
+}
+
+impl IntViewTransform for Resolved<View<IntVal>> {
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		self.0.transform_decision_val(val)
 	}
 }
 
@@ -1005,6 +1011,16 @@ impl<'a> IntSimplificationActions<SimplificationContext<'a>> for View<IntVal> {
 	) -> Result<(), Conflict<View<bool>>> {
 		let other = other.into().resolve_alias(&*ctx.0);
 		self.resolve_alias(&*ctx.0).unify(ctx, other)
+	}
+}
+
+impl IntViewTransform for View<IntVal> {
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		match self.0 {
+			IntView::Const(i) => i,
+			IntView::Linear(lin) => lin.transform_decision_val(val),
+			IntView::Bool(lin) => lin.transform_decision_val(val),
+		}
 	}
 }
 

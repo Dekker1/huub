@@ -43,7 +43,7 @@ use crate::{
 	},
 	solver::{
 		IntLitMeaning, Polarity,
-		activation_list::ActivationAction,
+		activation_list::{ActivationAction, IntChange},
 		queue::{PropagatorInfo, PropagatorQueue},
 	},
 };
@@ -129,7 +129,7 @@ pub struct Model {
 	cur_prop: Option<ConRef>,
 	/// Integer variable changes that occurred during the execution of the
 	/// current propagator.
-	int_events: FxHashMap<u32, IntEvent>,
+	int_events: FxHashMap<u32, IntChange>,
 	/// Boolean variable changes that occurred during the execution of the
 	/// current propagator.
 	bool_events: Vec<Decision<bool>>,
@@ -228,9 +228,15 @@ impl Model {
 	}
 
 	/// Notify a single integer advisor or propagator.
-	fn advise_of_int_change(&mut self, con: ConRef, data: u64, event: IntEvent) -> bool {
+	fn advise_of_int_change(
+		&mut self,
+		con: ConRef,
+		data: u64,
+		event: IntEvent,
+		previous: Option<IntVal>,
+	) -> bool {
 		if let Some(mut c) = self.constraints[con.index()].take() {
-			let ret = c.advise_of_int_change(self, data, event);
+			let ret = c.advise_of_int_change(self, data, event, previous);
 			self.constraints[con.index()] = Some(c);
 			ret
 		} else {
@@ -352,8 +358,8 @@ impl Model {
 	/// this method.
 	pub(crate) fn notify_advisors(&mut self) {
 		let mut int_events = mem::take(&mut self.int_events);
-		for (i, event) in int_events.drain() {
-			self.notify_int_event(i, event);
+		for (i, change) in int_events.drain() {
+			self.notify_int_event(i, change);
 		}
 		self.int_events = int_events;
 		let mut bool_events = mem::take(&mut self.bool_events);
@@ -377,7 +383,9 @@ impl Model {
 						..
 					} = x.clone();
 					let enqueue = if bool2int {
-						self.advise_of_int_change(con, data, IntEvent::Fixed)
+						// A Boolean view only changes by becoming fixed, so there is no
+						// single value the change replaced.
+						self.advise_of_int_change(con, data, IntEvent::Fixed, None)
 					} else {
 						self.advise_of_bool_change(con, data)
 					};
@@ -392,11 +400,11 @@ impl Model {
 		}
 	}
 
-	/// Notify the propagators interested in a single integer event.
-	pub(crate) fn notify_int_event(&mut self, i: u32, event: IntEvent) {
+	/// Notify the propagators interested in a single integer change.
+	pub(crate) fn notify_int_event(&mut self, i: u32, change: IntChange) {
 		let constraints = mem::take(&mut self.int_vars[i as usize].constraints);
 		let iv = Decision(i);
-		constraints.for_each_activated_by(event, |act| match act {
+		constraints.for_each_activated_by(change.event, |act, cond| match act {
 			ActivationAction::Advise::<AdvRef, _>(adv) => {
 				let x: &Advisor = &self.advisors[adv.index()];
 				let Advisor {
@@ -406,11 +414,7 @@ impl Model {
 					bool2int,
 					condition,
 				} = x.clone();
-				let event = match event {
-					IntEvent::LowerBound if negated => IntEvent::UpperBound,
-					IntEvent::UpperBound if negated => IntEvent::LowerBound,
-					_ => event,
-				};
+				let (event, previous) = change.advice(cond, negated);
 				let enqueue = if let Some(cond) = condition {
 					let triggered = match cond {
 						IntLitMeaning::Eq(_) | IntLitMeaning::NotEq(_) => iv.val(self).is_some(),
@@ -421,7 +425,9 @@ impl Model {
 					};
 					if triggered {
 						if bool2int {
-							self.advise_of_int_change(con, data, IntEvent::Fixed)
+							// The subscriber views the literal, not this decision, so
+							// the change cannot be attributed to one of its values.
+							self.advise_of_int_change(con, data, IntEvent::Fixed, None)
 						} else {
 							self.advise_of_bool_change(con, data)
 						}
@@ -429,7 +435,7 @@ impl Model {
 						false
 					}
 				} else {
-					self.advise_of_int_change(con, data, event)
+					self.advise_of_int_change(con, data, event, previous)
 				};
 				if enqueue {
 					self.propagator_queue.enqueue_propagator(con.raw());
@@ -580,13 +586,45 @@ impl Model {
 		Ok(())
 	}
 
+	/// Record that the domain of the given integer decision has changed, so
+	/// that its subscribers are notified on the next call to
+	/// [`Model::notify_advisors`].
+	///
+	/// `previous` are the bounds of the decision before the change, and
+	/// `removed` the value it removed from the domain when it removed exactly
+	/// one. Changes recorded for the same decision before they are notified are
+	/// coalesced: the bounds of the earliest are kept, so that the reported
+	/// values still describe the state before the combined change, and the
+	/// removed value is dropped, because a combined change can no longer be
+	/// attributed to a single value.
+	pub(crate) fn record_int_event(
+		&mut self,
+		i: u32,
+		event: IntEvent,
+		previous: (IntVal, IntVal),
+		removed: Option<IntVal>,
+	) {
+		let _ = self
+			.int_events
+			.entry(i)
+			.and_modify(|change| {
+				change.event += event;
+				change.removed = None;
+			})
+			.or_insert(IntChange {
+				event,
+				previous,
+				removed,
+			});
+	}
+
 	/// Invoke `f` with a [`ConRef`] for each constraint that the given integer
 	/// decision is subscribed to (i.e. that may involve it). The same
 	/// constraint may be reported more than once.
 	pub(crate) fn subscribed_constraints(&self, dec: Decision<IntVal>, mut f: impl FnMut(ConRef)) {
 		self.int_vars[dec.idx()].constraints.for_each_activated_by(
 			IntEvent::Fixed,
-			|act: ActivationAction<AdvRef, ConRef>| {
+			|act: ActivationAction<AdvRef, ConRef>, _| {
 				let con = match act {
 					ActivationAction::Enqueue(con) => con,
 					ActivationAction::Advise(adv) => self.advisors[adv.index()].con,
@@ -955,6 +993,7 @@ mod tests {
 			context: &mut E::NotificationContext<'_>,
 			_data: u64,
 			_event: IntEvent,
+			_: Option<IntVal>,
 		) -> bool {
 			context.set_trailed(self.int_check, context.trailed(self.int_check) + 1);
 			true

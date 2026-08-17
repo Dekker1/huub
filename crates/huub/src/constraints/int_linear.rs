@@ -1088,6 +1088,7 @@ where
 		ctx: &mut E::NotificationContext<'_>,
 		_data: u64,
 		_event: IntEvent,
+		_: Option<IntVal>,
 	) -> bool {
 		debug_assert!(self.terms[_data as usize].val(ctx).is_some());
 		debug_assert_eq!(_event, IntEvent::Fixed);

@@ -15,7 +15,7 @@ use crate::{
 	IntSet, IntVal,
 	actions::{
 		BoolInspectionActions, IntDecisionActions, IntExplanationActions, IntInspectionActions,
-		Trailed, TrailingActions,
+		IntViewTransform, Trailed, TrailingActions,
 	},
 	solver::{
 		IntLitMeaning, Polarity, Solver,
@@ -392,6 +392,12 @@ impl IntInspectionActions<State> for Decision<IntVal> {
 	fn val(&self, ctx: &State) -> Option<IntVal> {
 		let (lb, ub) = self.bounds(ctx);
 		if lb == ub { Some(lb) } else { None }
+	}
+}
+
+impl IntViewTransform for Decision<IntVal> {
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		val
 	}
 }
 

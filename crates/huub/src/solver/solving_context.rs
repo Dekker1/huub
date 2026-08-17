@@ -27,6 +27,7 @@ use crate::{
 	helpers::bytes::Bytes,
 	solver::{
 		BoxedPropagator, IntLitMeaning, Polarity,
+		activation_list::IntChange,
 		decision::{Decision, integer::LazyLitDef},
 		engine::{
 			Engine, EngineReason, EngineReasonSink, LitPropagation, PropRef, State, trace_new_lit,
@@ -389,7 +390,21 @@ impl<'a> SolvingContext<'a> {
 			IntLitMeaning::Less(i) if i == lb + 1 => IntEvent::Fixed,
 			IntLitMeaning::Less(_) => IntEvent::UpperBound,
 		};
-		self.propagate_lit(lit, reason, Some((iv, event)));
+		self.propagate_lit(
+			lit,
+			reason,
+			Some((
+				iv,
+				IntChange {
+					event,
+					previous: (lb, ub),
+					removed: match lit_req {
+						IntLitMeaning::NotEq(i) => Some(i),
+						_ => None,
+					},
+				},
+			)),
+		);
 		// Make the domains match.
 		match lit_req {
 			IntLitMeaning::Eq(val) => {
@@ -423,7 +438,7 @@ impl<'a> SolvingContext<'a> {
 		&mut self,
 		lit: Decision<bool>,
 		reason: impl FnOnce(&mut Self, &mut SolvingReasonSink<'_>),
-		event: Option<(Decision<IntVal>, IntEvent)>,
+		event: Option<(Decision<IntVal>, IntChange)>,
 	) {
 		// Build the reason directly onto the reason trail.
 		let reason = self.with_reason_trail(|ctx, reason_trail| {

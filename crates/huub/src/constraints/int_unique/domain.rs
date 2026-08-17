@@ -821,6 +821,7 @@ where
 		ctx: &mut E::NotificationContext<'_>,
 		data: u64,
 		_event: IntEvent,
+		_: Option<IntVal>,
 	) -> bool {
 		// safe to unwrap: `card()` only returns `None` if the number of steps would
 		// overflow `usize`

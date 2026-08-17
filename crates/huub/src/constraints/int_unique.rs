@@ -175,10 +175,15 @@ where
 		ctx: &mut E::NotificationContext<'_>,
 		data: u64,
 		event: IntEvent,
+		previous: Option<IntVal>,
 	) -> bool {
 		match event {
-			IntEvent::Fixed => self.value_prop.advise_of_int_change(ctx, data, event),
-			IntEvent::Bounds => self.bounds_prop.advise_of_int_change(ctx, data, event),
+			IntEvent::Fixed => self
+				.value_prop
+				.advise_of_int_change(ctx, data, event, previous),
+			IntEvent::Bounds => self
+				.bounds_prop
+				.advise_of_int_change(ctx, data, event, previous),
 			_ => unreachable!("IntUnique should only be advised of Fixed and Bounds events"),
 		}
 	}

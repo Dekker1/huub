@@ -168,9 +168,11 @@ where
 		ctx: &mut E::NotificationContext<'_>,
 		data: u64,
 		event: IntEvent,
+		previous: Option<IntVal>,
 	) -> bool {
 		// Forward advising to `no_cycle` to update its incremental successor state.
-		self.no_cycle_prop.advise_of_int_change(ctx, data, event)
+		self.no_cycle_prop
+			.advise_of_int_change(ctx, data, event, previous)
 	}
 
 	fn initialize(&mut self, ctx: &mut E::InitializationContext<'_>) {

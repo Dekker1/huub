@@ -16,7 +16,7 @@ pub use crate::actions::{
 	initialization::{BoolInitActions, BrancherInitActions, InitActions, IntInitActions},
 	integer::{
 		IntDecisionActions, IntEvent, IntExplanationActions, IntInspectionActions, IntOperations,
-		IntPropCond, IntPropagationActions, IntSimplificationActions,
+		IntPropCond, IntPropagationActions, IntSimplificationActions, IntViewTransform,
 	},
 };
 use crate::{

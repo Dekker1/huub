@@ -14,8 +14,8 @@ use crate::{
 	IntSet, IntVal,
 	actions::{
 		IntAnalyzeActions, IntDecisionActions, IntExplanationActions, IntInspectionActions,
-		IntPropagationActions, IntSimplificationActions, PropagationActions, PropagationContext,
-		ReasoningContext,
+		IntPropagationActions, IntSimplificationActions, IntViewTransform, PropagationActions,
+		PropagationContext, ReasoningContext,
 	},
 	helpers::{div_ceil, div_floor},
 	solver::{
@@ -419,6 +419,15 @@ where
 		_other: impl Into<Self>,
 	) -> Result<(), <Ctx as PropagationContext>::Conflict> {
 		panic!("unify cannot be defined for any generic LinearView")
+	}
+}
+
+impl<Var> IntViewTransform for LinearView<NonZero<IntVal>, IntVal, Var>
+where
+	Var: IntViewTransform,
+{
+	fn transform_decision_val(&self, val: IntVal) -> IntVal {
+		self.transform_val(self.var.transform_decision_val(val))
 	}
 }
 

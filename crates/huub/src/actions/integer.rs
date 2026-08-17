@@ -224,6 +224,22 @@ where
 	fn unify(&self, ctx: &mut Context, other: impl Into<Self>) -> Result<(), Context::Conflict>;
 }
 
+/// Translation of values from the value space of a decision variable into the
+/// value space of a view over that decision variable.
+///
+/// A [`Propagator`](crate::constraints::Propagator) is advised of a change in
+/// terms of the decision variable that changed, not of the view it subscribed
+/// with (see
+/// [`Propagator::advise_of_int_change`](crate::constraints::Propagator::advise_of_int_change)).
+/// This trait is how such a value is brought back into the view's own value
+/// space, so that it can be compared against, for example,
+/// [`IntInspectionActions::min`].
+pub trait IntViewTransform {
+	/// Translate a value of the underlying decision variable into the value
+	/// space of this view.
+	fn transform_decision_val(&self, val: IntVal) -> IntVal;
+}
+
 impl<Ctx> IntDecisionActions<Ctx> for IntVal
 where
 	Ctx: ReasoningContext + ?Sized,
@@ -393,6 +409,14 @@ where
 		} else {
 			Err(ctx.declare_conflict(NO_REASON))
 		}
+	}
+}
+
+impl IntViewTransform for IntVal {
+	fn transform_decision_val(&self, _: IntVal) -> IntVal {
+		// A constant has no underlying decision variable, so it is never advised
+		// of a change.
+		*self
 	}
 }
 

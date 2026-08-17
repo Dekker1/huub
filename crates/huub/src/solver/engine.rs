@@ -35,14 +35,14 @@ use tracing::{debug, trace, warn};
 use crate::{
 	Clause, IntVal,
 	actions::{
-		BoolInspectionActions, IntEvent, ReasonActions, ReasoningContext, ReasoningEngine, Trailed,
-		TrailingActions,
+		BoolInspectionActions, IntEvent, IntPropCond, ReasonActions, ReasoningContext,
+		ReasoningEngine, Trailed, TrailingActions,
 	},
 	constraints::{BoxedPropagator, Conflict},
 	helpers::bytes::Bytes,
 	solver::{
 		IntLitMeaning, Polarity, SearchStrategy, SwitchTrigger,
-		activation_list::{ActivationAction, ActivationActionS, ActivationList},
+		activation_list::{ActivationAction, ActivationActionS, ActivationList, IntChange},
 		bool_to_int::BoolToIntMap,
 		branchers::{BoxedBrancher, Directive},
 		decision::{
@@ -154,10 +154,13 @@ pub(crate) struct LitPropagation {
 	/// The reason for which the literal was propagated, already stored on the
 	/// trail, or `None` if trivially true.
 	pub(crate) reason: Option<EngineReason>,
-	/// The underlying event on complex types that triggered the propagation.
+	/// The underlying change on complex types that triggered the propagation.
 	///
-	/// This event is used to schedule further propagators.
-	pub(crate) event: Option<(Decision<IntVal>, IntEvent)>,
+	/// This change is used to schedule further propagators. It has to be
+	/// recorded here rather than reconstructed when the SAT solver reports the
+	/// literal back, because by then the domain change has already been enacted
+	/// and the bounds it replaced are no longer available.
+	pub(crate) event: Option<(Decision<IntVal>, IntChange)>,
 }
 /// Identifies an propagator in a [`Solver`]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -222,7 +225,7 @@ pub struct State {
 	/// Queue of propagators awaiting action.
 	pub(crate) propagator_queue: PropagatorQueue,
 	/// Last literal propagated by the Engine.
-	last_propagated: Option<(RawLit, Option<(Decision<IntVal>, IntEvent)>)>,
+	last_propagated: Option<(RawLit, Option<(Decision<IntVal>, IntChange)>)>,
 
 	// ---- Debugging Helpers ----
 	/// List of integer variables that have been notified as fixed, but should
@@ -352,20 +355,18 @@ impl Engine {
 	/// Notify the given propagator about the integer change, providing the
 	/// given data.
 	///
-	/// If `negated` is true, then the event is negated.
+	/// The change is described in the terms of the subscription's `condition`,
+	/// negating the reported bound if `negated` is true.
 	pub(crate) fn notify_int_advisor(
 		&mut self,
 		prop: PropRef,
-		event: IntEvent,
+		change: &IntChange,
+		condition: IntPropCond,
 		data: u64,
 		negated: bool,
 	) -> bool {
-		let event = match event {
-			IntEvent::LowerBound if negated => IntEvent::UpperBound,
-			IntEvent::UpperBound if negated => IntEvent::LowerBound,
-			e => e,
-		};
-		self.propagators[prop.index()].advise_of_int_change(&mut self.state, data, event)
+		let (event, previous) = change.advice(condition, negated);
+		self.propagators[prop.index()].advise_of_int_change(&mut self.state, data, event, previous)
 	}
 
 	/// Notify the given propagator about the literal change, providing the
@@ -375,10 +376,13 @@ impl Engine {
 	/// view.
 	pub(crate) fn notify_lit_advisor(&mut self, prop: PropRef, data: u64, bool2int: bool) -> bool {
 		if bool2int {
+			// A literal only ever changes by becoming fixed, so there is no single
+			// value the change replaced.
 			self.propagators[prop.index()].advise_of_int_change(
 				&mut self.state,
 				data,
 				IntEvent::Fixed,
+				None,
 			)
 		} else {
 			self.propagators[prop.index()].advise_of_bool_change(&mut self.state, data)
@@ -441,17 +445,20 @@ impl PropagatorExtension for Engine {
 				}
 
 				let activation = mem::take(&mut ctx.state.int_activation[r.idx()]);
-				activation.for_each_activated_by(IntEvent::Fixed, |action| {
+				let change = IntChange::unattributed(IntEvent::Fixed, (lb, ub));
+				activation.for_each_activated_by(IntEvent::Fixed, |action, condition| {
 					let prop = match action {
 						ActivationAction::Advise::<AdvRef, _>(adv) => {
 							let &AdvisorDef {
-								data, propagator, ..
-							} = &ctx.state.advisors[adv.index()];
-							if !self.propagators[propagator.index()].advise_of_int_change(
-								ctx.state,
+								negated,
 								data,
-								IntEvent::Fixed,
-							) {
+								propagator,
+								..
+							} = &ctx.state.advisors[adv.index()];
+							let (event, previous) = change.advice(condition, negated);
+							if !self.propagators[propagator.index()]
+								.advise_of_int_change(ctx.state, data, event, previous)
+							{
 								return;
 							}
 							propagator
@@ -619,8 +626,11 @@ impl PropagatorExtension for Engine {
 			// Enqueue based on literal meaning in complex type
 			let iv_event = iv_event.or_else(|| {
 				let (iv, meaning) = self.state.get_int_lit_meaning(Decision(lit))?;
-				// Enact domain changes and determine change event
+				// Enact domain changes and determine change event. The bounds are
+				// read before the change is enacted, so that the advisors can be
+				// told what the change replaced.
 				let (lb, ub) = self.state.int_vars[iv.idx()].bounds(&self.state);
+				let mut removed = None;
 				let event = match meaning {
 					IntLitMeaning::Eq(val) if val == lb && val == ub => None,
 					IntLitMeaning::Eq(val) if val < lb || val > ub => {
@@ -656,7 +666,10 @@ impl PropagatorExtension for Engine {
 						Some(IntEvent::Fixed)
 					}
 					IntLitMeaning::NotEq(i) if i < lb || i > ub => None,
-					IntLitMeaning::NotEq(_) => Some(IntEvent::Domain),
+					IntLitMeaning::NotEq(i) => {
+						removed = Some(i);
+						Some(IntEvent::Domain)
+					}
 					IntLitMeaning::GreaterEq(new_lb) if new_lb <= lb => None,
 					IntLitMeaning::GreaterEq(new_lb) => {
 						trace!(target: "solver", lit = i32::from(lit), lb = new_lb, "new lb");
@@ -689,14 +702,21 @@ impl PropagatorExtension for Engine {
 						}
 					}
 				}?;
-				Some((iv, event))
+				Some((
+					iv,
+					IntChange {
+						event,
+						previous: (lb, ub),
+						removed,
+					},
+				))
 			});
 
 			if !self.state.failed
-				&& let Some((iv, event)) = iv_event
+				&& let Some((iv, change)) = iv_event
 			{
 				let activations = mem::take(&mut self.state.int_activation[iv.idx()]);
-				activations.for_each_activated_by(event, |action| {
+				activations.for_each_activated_by(change.event, |action, condition| {
 					let prop = match action {
 						ActivationAction::Advise::<AdvRef, _>(adv) => {
 							let &AdvisorDef {
@@ -705,7 +725,8 @@ impl PropagatorExtension for Engine {
 								propagator,
 								..
 							} = &self.state.advisors[adv.index()];
-							let enqueue = self.notify_int_advisor(propagator, event, data, negated);
+							let enqueue = self
+								.notify_int_advisor(propagator, &change, condition, data, negated);
 							if !enqueue {
 								return;
 							}
@@ -1150,19 +1171,105 @@ impl TrailingActions for State {
 
 #[cfg(test)]
 mod tests {
+	use std::{cell::RefCell, rc::Rc};
+
 	use pindakaas::solver::propagation::Propagator as ExternalPropagator;
 
 	use crate::{
 		IntVal,
 		actions::{
 			BoolPropagationActions, InitActions, IntDecisionActions, IntEvent, IntInitActions,
-			IntPropCond, IntPropagationActions, ReasoningEngine,
+			IntInspectionActions, IntPropCond, IntPropagationActions, ReasoningEngine,
 		},
 		constraints::{NO_REASON, Propagator},
 		solver::{
 			BoolView, Decision, IntLitMeaning, LiteralStrategy, Solver, View, engine::Engine,
 		},
 	};
+
+	/// The `(event, previous, current)` triple recorded for each advisor call.
+	type Advice = Rc<RefCell<Vec<(IntEvent, Option<IntVal>, IntVal)>>>;
+
+	/// A propagator that records every piece of advice it is given about the
+	/// minimum of a single integer view, so that a test can check the advice
+	/// against what actually happened to the domain.
+	#[derive(Clone, Debug)]
+	struct MinRecorder {
+		/// The view whose minimum is watched.
+		view: View<IntVal>,
+		/// The `(event, previous, current)` triple of every advisor call.
+		advice: Advice,
+		/// Consequence to propagate on the first call to `propagate`, if any.
+		propagate_min: Option<IntVal>,
+	}
+
+	/// The same contract for a bound moved by a propagator, which reaches the
+	/// advisor through the propagation queue rather than directly.
+	#[test]
+	fn advice_chains_for_propagator_driven_change() {
+		let (mut slv, _, advice) = min_recorder(Some(3));
+
+		let (mut actions, mut engine) = slv.as_parts_mut();
+		let lit = ExternalPropagator::propagate(&mut *engine, &mut actions).unwrap();
+		// The bound is already enacted, so the pre-change minimum has to have been
+		// recorded when the propagation was queued.
+		assert!(advice.borrow().is_empty());
+		ExternalPropagator::notify_assignment(&mut *engine, &[lit]);
+
+		assert_eq!(&advice.borrow()[..], &[(IntEvent::LowerBound, Some(0), 3)]);
+	}
+
+	/// A subscription on a single bound must be advised in terms of that bound,
+	/// with the value the change replaced, even when the change fixed the
+	/// variable outright. Covers a bound moved by the SAT solver.
+	#[test]
+	fn advice_chains_for_sat_driven_change() {
+		let (mut slv, view, advice) = min_recorder(None);
+		let ge_2 = view.lit(&mut slv, IntLitMeaning::GreaterEq(2));
+		let eq_4 = view.lit(&mut slv, IntLitMeaning::Eq(4));
+		let (BoolView::Lit(ge_2), BoolView::Lit(eq_4)) = (ge_2.0, eq_4.0) else {
+			unreachable!()
+		};
+
+		let (_, mut engine) = slv.as_parts_mut();
+		ExternalPropagator::notify_assignment(&mut *engine, &[ge_2.0]);
+		// Fixing the variable moves only the maximum, but the advice must still
+		// describe the minimum, which the second step then raises.
+		ExternalPropagator::notify_assignment(&mut *engine, &[eq_4.0]);
+
+		let advice = advice.borrow();
+		assert!(
+			advice.iter().all(|(e, _, _)| *e == IntEvent::LowerBound),
+			"lower bound subscription advised of {advice:?}"
+		);
+		assert_eq!(
+			&advice[..],
+			&[
+				(IntEvent::LowerBound, Some(0), 2),
+				(IntEvent::LowerBound, Some(2), 4),
+			]
+		);
+	}
+
+	/// Build a solver with a `0..=4` decision watched by a [`MinRecorder`],
+	/// returning the solver, the view, and the recorded advice.
+	fn min_recorder(propagate_min: Option<IntVal>) -> (Solver, View<IntVal>, Advice) {
+		let mut slv: Solver = Solver::default();
+		let view = slv
+			.new_int_decision(0..=4)
+			.order_literals(LiteralStrategy::Eager)
+			.view();
+		let advice = Rc::new(RefCell::new(Vec::new()));
+		slv.add_propagator(
+			Box::new(MinRecorder {
+				view,
+				advice: Rc::clone(&advice),
+				propagate_min,
+			}),
+			false,
+		);
+		(slv, view, advice)
+	}
 
 	/// Regression test for losing an integer notification when a queued
 	/// propagation is also implied by another propagated literal.
@@ -1204,6 +1311,7 @@ mod tests {
 				_: &mut <Engine as ReasoningEngine>::NotificationContext<'_>,
 				data: u64,
 				event: IntEvent,
+				_: Option<IntVal>,
 			) -> bool {
 				assert_eq!(data, 0);
 				assert_eq!(event, IntEvent::LowerBound);
@@ -1264,5 +1372,36 @@ mod tests {
 		assert_eq!(propagated, None);
 
 		assert_eq!(*notifications.borrow(), 1);
+	}
+
+	impl Propagator<Engine> for MinRecorder {
+		fn advise_of_int_change(
+			&mut self,
+			ctx: &mut <Engine as ReasoningEngine>::NotificationContext<'_>,
+			data: u64,
+			event: IntEvent,
+			previous: Option<IntVal>,
+		) -> bool {
+			assert_eq!(data, 0);
+			self.advice
+				.borrow_mut()
+				.push((event, previous, self.view.min(ctx)));
+			false
+		}
+
+		fn initialize(&mut self, ctx: &mut <Engine as ReasoningEngine>::InitializationContext<'_>) {
+			ctx.enqueue_now(self.propagate_min.is_some());
+			self.view.advise_when(ctx, IntPropCond::LowerBound, 0);
+		}
+
+		fn propagate(
+			&mut self,
+			ctx: &mut <Engine as ReasoningEngine>::PropagationContext<'_>,
+		) -> Result<(), <Engine as ReasoningEngine>::Conflict> {
+			if let Some(min) = self.propagate_min.take() {
+				self.view.tighten_min(ctx, min, NO_REASON)?;
+			}
+			Ok(())
+		}
 	}
 }

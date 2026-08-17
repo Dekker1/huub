@@ -32,7 +32,7 @@ use crate::{
 		int_abs::IntAbsBounds,
 		int_array_minimum::IntArrayMinimumBounds,
 		int_div::IntDivBounds,
-		int_linear::{IntLinear, LinComparator, Reification},
+		int_linear::{IntLinear, LinComparator, LinearScheduling, Reification},
 		int_mul::IntMulBounds,
 		int_no_overlap::IntNoOverlapSweep,
 		int_pow::IntPowBounds,
@@ -303,6 +303,7 @@ impl Model {
 		#[builder(setters(name = comparator_internal, vis = ""))] comparator: Comparator,
 		#[builder(setters(name = rhs_internal, vis = ""))] rhs: IntLinearExp,
 		#[builder(setters(name = reif_internal, vis = ""))] reif: Option<Reification>,
+		#[builder(default)] scheduling: LinearScheduling,
 	) -> Result<(), Nogood<View<bool>>> {
 		// Subtract the RHS from the LHS to get a linear expression with a constant 0 on
 		// the RHS
@@ -374,6 +375,7 @@ impl Model {
 				rhs: rhs.into(),
 				reif,
 				comparator,
+				scheduling,
 			})
 		} else {
 			self.post_constraint(IntLinear::<OverflowImpossible> {
@@ -381,6 +383,7 @@ impl Model {
 				rhs,
 				reif,
 				comparator,
+				scheduling,
 			})
 		}
 	}

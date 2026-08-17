@@ -6,22 +6,25 @@ use std::{
 
 use expect_test::{Expect, expect};
 use itertools::Itertools;
-use pindakaas::propositional_logic::Formula;
+use pindakaas::{
+	propositional_logic::Formula, solver::propagation::Propagator as ExternalPropagator,
+};
 use tracing_test::traced_test;
 
 use crate::{
 	IntSet, IntVal,
+	actions::IntDecisionActions,
 	constraints::{
 		Conflict,
 		int_linear::{IntLinearLessEqBounds, IntLinearNotEqValue},
 	},
 	model::{Model, deserialize::AnyView as ModelView},
 	solver::{
-		AnyView as SolverView, LiteralStrategy, Solver, Status, Valuation, Value,
+		AnyView as SolverView, IntLitMeaning, LiteralStrategy, Solver, Status, Valuation, Value,
 		branchers::{DecisionSelection, DomainSelection, IntBrancher},
 		decision::Decision,
 		solving_context::SolvingContext,
-		view::View,
+		view::{View, boolean::BoolView},
 	},
 };
 
@@ -362,6 +365,20 @@ impl Solver {
 		);
 	}
 
+	/// Assign the literal with the given meaning on an integer view and notify
+	/// the engine of the assignment, so that the domain change and any advisors
+	/// are processed exactly as they would be during search.
+	///
+	/// Panics if the literal is constant.
+	pub(crate) fn assign_int_lit(&mut self, view: View<IntVal>, meaning: IntLitMeaning) {
+		let lit = view.lit(self, meaning);
+		let BoolView::Lit(lit) = lit.0 else {
+			panic!("the literal for {meaning:?} is constant")
+		};
+		let (_, mut engine) = self.as_parts_mut();
+		ExternalPropagator::notify_assignment(&mut *engine, &[lit.0]);
+	}
+
 	pub(crate) fn expect_solutions<V>(mut self, vars: &[V], expected: Expect)
 	where
 		V: Clone + Into<SolverView> + Valuation,
@@ -424,5 +441,11 @@ impl Solver {
 			.drain(..)
 			.map(|p| Decision(p.lit).into())
 			.collect())
+	}
+
+	/// Whether the propagator that was posted with the given index is currently
+	/// scheduled to run.
+	pub(crate) fn propagator_enqueued(&self, prop: u32) -> bool {
+		self.engine.borrow().state.propagator_queue.info[prop as usize].enqueued
 	}
 }

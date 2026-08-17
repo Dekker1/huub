@@ -66,6 +66,9 @@ pub struct IntLinear<OF: OverflowMode> {
 	pub(crate) rhs: OF::Accumulator,
 	/// Boolean decision variable that (half-)reifies the constraint, if any.
 	pub(crate) reif: Option<Reification>,
+	/// Strategy used to decide when the bounds consistent propagators for this
+	/// constraint are scheduled.
+	pub(crate) scheduling: LinearScheduling,
 }
 
 /// Type alias for the non-reified version of the [`IntLinearLessEqBoundsImpl`]
@@ -87,6 +90,55 @@ pub struct IntLinearLessEqBoundsImpl<OV: OverflowMode, IV, BV> {
 /// Type alias for the reified version of the [`IntLinearLessEqBoundsImpl`]
 /// propagator.
 pub type IntLinearLessEqImpBounds<OV, IV, BV> = IntLinearLessEqBoundsImpl<OV, IV, BV>;
+
+/// Type alias for the half-reified version of the [`IntLinearLessEqSlackImpl`]
+/// propagator.
+pub type IntLinearLessEqImpSlack<OV, IV, BV, const TRACK_MAX: bool> =
+	IntLinearLessEqSlackImpl<OV, IV, BV, TRACK_MAX>;
+
+/// Type alias for the non-reified version of the [`IntLinearLessEqSlackImpl`]
+/// propagator.
+pub type IntLinearLessEqSlack<OV, IV, const TRACK_MAX: bool> =
+	IntLinearLessEqSlackImpl<OV, IV, True, TRACK_MAX>;
+
+/// Bounds consistent propagator for the `int_lin_le` or `int_lin_le_imp`
+/// constraint that maintains the slack of the constraint incrementally, so
+/// that it is only scheduled when it can actually prune something.
+///
+/// The slack `max - Σ min(term)` is the amount by which any single term may
+/// still grow, so propagation is possible exactly when some term can grow
+/// further than the slack allows, and the constraint is violated when the
+/// slack is negative. The advisor keeps the slack up to date from the value
+/// each bound change replaced, and compares it against `max_span`, which
+/// bounds how far any term can still grow.
+///
+/// The slack is only ever an over-estimate: an advisor is not told about a
+/// change until the SAT solver reports the corresponding literal back, so a
+/// change that a propagator has already enacted may not be accounted for yet.
+/// That is safe because every enacted change is eventually reported, and the
+/// advisor decides again on each one, so the last advice for a batch of
+/// changes is taken with all of them applied.
+///
+/// See Harvey and Schimpf, "Bounds consistency techniques for long linear
+/// constraints" (2002) for the slack formulation, and Schulte and Stuckey,
+/// "Efficient constraint propagation engines" (TOPLAS 2008) for the advisor
+/// design.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntLinearLessEqSlackImpl<OV: OverflowMode, IV, BV, const TRACK_MAX: bool> {
+	/// The propagator whose scheduling is being made incremental.
+	inner: IntLinearLessEqBoundsImpl<OV, IV, BV>,
+	/// The slack of the constraint, `max - Σ min(term)`, saturated into the
+	/// [`IntVal`] range.
+	slack: Trailed<IntVal>,
+	/// An upper bound on the largest `max(term) - min(term)` over the terms,
+	/// refreshed whenever the propagator runs. [`IntVal::MAX`] marks a span
+	/// that did not fit, and is therefore unknown.
+	max_span: Trailed<IntVal>,
+	/// `max - Σ max(term)`, saturated into the [`IntVal`] range. The constraint
+	/// is entailed while this is non-negative. Only maintained when
+	/// `TRACK_MAX`.
+	max_slack: Trailed<IntVal>,
+}
 
 /// Type alias for the reified version of the [`IntLinearNotEqValueImpl`]
 /// propagator.
@@ -122,6 +174,28 @@ pub(crate) enum LinComparator {
 	NotEqual,
 }
 
+/// Strategy used to decide when the bounds consistent propagator for a linear
+/// constraint is scheduled during the search.
+///
+/// The strategies differ only in how often the propagator runs, never in what
+/// it infers when it does.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum LinearScheduling {
+	/// Schedule the propagator whenever the minimum of any of its terms
+	/// changes.
+	#[default]
+	Eager,
+	/// Track the slack of the constraint, and schedule the propagator only when
+	/// the slack is small enough for one of its terms to be pruned.
+	Slack,
+	/// As [`LinearScheduling::Slack`], but additionally track the maxima of the
+	/// terms, so that the propagator is no longer scheduled once the constraint
+	/// is entailed. This filters more, at the cost of watching both bounds of
+	/// every term instead of one.
+	SlackEntailment,
+}
+
 /// Reification possibilities for a linear constraint.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum Reification {
@@ -129,6 +203,47 @@ pub(crate) enum Reification {
 	ImpliedBy(model::View<bool>),
 	/// The constraint is reified by the given [`BoolDecision`].
 	ReifiedBy(model::View<bool>),
+}
+
+/// Post the bounds consistent propagator for `terms <= rhs` selected by
+/// `scheduling`, half-reified by `r` when one is given.
+fn post_less_eq(
+	slv: &mut LoweringContext<'_>,
+	terms: Vec<solver::View<IntVal>>,
+	rhs: impl Into<DoubleIntVal>,
+	r: Option<solver::View<bool>>,
+	scheduling: LinearScheduling,
+) {
+	let rhs = rhs.into();
+	match (scheduling, r) {
+		(LinearScheduling::Eager, None) => IntLinearLessEqBounds::post(slv, terms, rhs),
+		(LinearScheduling::Slack, None) => {
+			IntLinearLessEqSlack::<_, _, false>::post(slv, terms, rhs);
+		}
+		(LinearScheduling::SlackEntailment, None) => {
+			IntLinearLessEqSlack::<_, _, true>::post(slv, terms, rhs);
+		}
+		(LinearScheduling::Eager, Some(r)) => {
+			IntLinearLessEqImpBounds::<_, _, Decision<bool>>::post(slv, terms, rhs, r);
+		}
+		(LinearScheduling::Slack, Some(r)) => {
+			IntLinearLessEqImpSlack::<_, _, Decision<bool>, false>::post(slv, terms, rhs, r);
+		}
+		(LinearScheduling::SlackEntailment, Some(r)) => {
+			IntLinearLessEqImpSlack::<_, _, Decision<bool>, true>::post(slv, terms, rhs, r);
+		}
+	}
+}
+
+/// Clamp an accumulated value into the [`IntVal`] range, so that it can be
+/// stored in a [`Trailed`] value.
+///
+/// Clamping is only correct because both quantities that are stored this way
+/// are slacks: clamping at [`IntVal::MAX`] under-estimates the slack, which
+/// only leads to a propagator being scheduled when it has nothing to do, and
+/// clamping at [`IntVal::MIN`] leaves a negative slack negative.
+fn saturate(val: DoubleIntVal) -> IntVal {
+	val.clamp(IntVal::MIN.into(), IntVal::MAX.into()) as IntVal
 }
 
 impl<E> Constraint<E> for IntEq
@@ -159,6 +274,7 @@ where
 			comparator: LinComparator::Equal,
 			rhs: 0,
 			reif: None,
+			scheduling: LinearScheduling::default(),
 		};
 		<_ as Constraint<E>>::to_solver(&lin, actions)
 	}
@@ -626,12 +742,13 @@ where
 
 		let negate_terms = |terms: &[solver::View<IntVal>]| terms.iter().map(|&v| -v).collect_vec();
 
+		let sched = self.scheduling;
 		match (operator, r) {
 			(LinComparator::Equal, None) => {
 				// coeffs * vars >= c <=> -coeffs * vars <= -c
-				IntLinearLessEqBounds::post(slv, negate_terms(&terms), -rhs);
+				post_less_eq(slv, negate_terms(&terms), -rhs, None, sched);
 				// coeffs * vars <= c
-				IntLinearLessEqBounds::post(slv, terms.clone(), rhs);
+				post_less_eq(slv, terms, rhs, None, sched);
 			}
 			(LinComparator::Equal, Some(r)) => {
 				if full_reif {
@@ -642,45 +759,31 @@ where
 						!r,
 					);
 				}
-				IntLinearLessEqImpBounds::<_, _, Decision<bool>>::post(
-					slv,
-					negate_terms(&terms),
-					-rhs,
-					r,
-				);
-				IntLinearLessEqImpBounds::<_, _, Decision<bool>>::post(slv, terms, rhs, r);
+				post_less_eq(slv, negate_terms(&terms), -rhs, Some(r), sched);
+				post_less_eq(slv, terms, rhs, Some(r), sched);
 			}
 			(LinComparator::LessEq, None) => {
-				IntLinearLessEqBounds::post(slv, terms, rhs);
+				post_less_eq(slv, terms, rhs, None, sched);
 			}
 			(LinComparator::LessEq, Some(r)) => {
 				if full_reif {
-					IntLinearLessEqImpBounds::<_, _, Decision<bool>>::post(
+					post_less_eq(
 						slv,
 						negate_terms(&terms),
 						-(rhs + 1.into()),
-						!r,
+						Some(!r),
+						sched,
 					);
 				}
-				IntLinearLessEqImpBounds::<_, _, Decision<bool>>::post(slv, terms, rhs, r);
+				post_less_eq(slv, terms, rhs, Some(r), sched);
 			}
 			(LinComparator::NotEqual, None) => {
 				IntLinearNotEqValue::post(slv, terms, rhs);
 			}
 			(LinComparator::NotEqual, Some(r)) => {
 				if full_reif {
-					IntLinearLessEqImpBounds::<_, _, Decision<bool>>::post(
-						slv,
-						terms.clone(),
-						rhs,
-						!r,
-					);
-					IntLinearLessEqImpBounds::<_, _, Decision<bool>>::post(
-						slv,
-						negate_terms(&terms),
-						-rhs,
-						!r,
-					);
+					post_less_eq(slv, terms.clone(), rhs, Some(!r), sched);
+					post_less_eq(slv, negate_terms(&terms), -rhs, Some(!r), sched);
 				}
 				IntLinearNotEqImpValue::<_, _, Decision<bool>>::post(slv, terms, rhs, r);
 			}
@@ -727,8 +830,78 @@ impl IntLinearLessEqBounds<OverflowPossible, solver::View<IntVal>> {
 		E: PostingActions + ?Sized,
 		solver::View<IntVal>: IntInspectionActions<E>,
 	{
+		let prop = Self::build(solver, vars, max, True);
+		solver.add_propagator(Box::new(prop));
+	}
+}
+
+impl<OF, IV, BV> IntLinearLessEqBoundsImpl<OF, IV, BV>
+where
+	OF: OverflowMode,
+{
+	/// Enforce `x[i] <= max - sum_{j != i} x[j].min` on every term, given the
+	/// sum of the minima of all terms.
+	///
+	/// Returns the largest `x[i].max - x[i].min` left over the terms, saturated
+	/// into the [`IntVal`] range, which bounds how much any single term can
+	/// still grow. Terms are re-read after they are tightened, so a maximum
+	/// that a hole in the domain pushed below the requested bound is reported
+	/// as the smaller span it really is.
+	fn propagate_terms<E>(
+		&self,
+		ctx: &mut E::PropagationContext<'_>,
+		lb_sum: OF::Accumulator,
+	) -> Result<IntVal, E::Conflict>
+	where
+		E: ReasoningEngine,
+		IV: IntSolverActions<E>,
+		E::Atom: BoolSolverActions<E>,
+	{
+		let slack = self.max - lb_sum;
+		let mut max_span: DoubleIntVal = 0;
+		for (j, v) in self.terms.iter().enumerate() {
+			let (min, mut max) = v.bounds(ctx);
+			// A term that cannot grow beyond the slack has nothing to prune.
+			if DoubleIntVal::from(max) - DoubleIntVal::from(min) > slack.into() {
+				let ub = slack + min.into();
+				match ub.try_into() {
+					Ok(ub) => v.tighten_max(ctx, ub, |_, rsn| rsn.defer(j as u64))?,
+					Err(_) if ub < IntVal::MIN.into() => v
+						.lit(ctx, IntLitMeaning::Less(IntVal::MIN))
+						.require(ctx, |_, rsn| rsn.defer(j as u64))?,
+					Err(_) => {
+						debug_assert!(ub > max.into());
+					}
+				}
+				max = v.max(ctx);
+			}
+			max_span = max_span.max(DoubleIntVal::from(max) - DoubleIntVal::from(min));
+		}
+		Ok(saturate(max_span))
+	}
+}
+
+impl<BV> IntLinearLessEqBoundsImpl<OverflowPossible, solver::View<IntVal>, BV> {
+	/// Collect the terms that are not yet fixed, folding the value of every
+	/// fixed term into the right-hand side.
+	///
+	/// # Panics
+	///
+	/// Panics if no unfixed terms are left. An empty linear constraint is a
+	/// constant comparison rather than a propagation problem, so the caller
+	/// must evaluate it directly instead of posting a propagator.
+	fn build<E>(
+		solver: &E,
+		vars: impl IntoIterator<Item = solver::View<IntVal>>,
+		max: impl Into<DoubleIntVal>,
+		reification: BV,
+	) -> Self
+	where
+		E: PostingActions + ?Sized,
+		solver::View<IntVal>: IntInspectionActions<E>,
+	{
 		let mut max = max.into();
-		let vars: Vec<solver::View<IntVal>> = vars
+		let terms = vars
 			.into_iter()
 			.filter(|v| {
 				if let Some(c) = v.val(solver) {
@@ -738,17 +911,16 @@ impl IntLinearLessEqBounds<OverflowPossible, solver::View<IntVal>> {
 					true
 				}
 			})
-			.collect();
+			.collect_vec();
 		assert!(
-			!vars.is_empty(),
-			"`IntLinearLessEqBounds::post` must be given at least one term"
+			!terms.is_empty(),
+			"a linear propagator must be given at least one term"
 		);
-
-		solver.add_propagator(Box::new(Self {
-			terms: vars.clone(),
+		Self {
+			terms,
 			max,
-			reification: True,
-		}));
+			reification,
+		}
 	}
 }
 
@@ -834,19 +1006,7 @@ where
 			return Ok(());
 		}
 
-		// propagate the upper bound of the variables
-		for (j, v) in self.terms.iter().enumerate() {
-			let ub = (self.max - lb_sum) + v.min(ctx).into();
-			match ub.try_into() {
-				Ok(ub) => v.tighten_max(ctx, ub, |_, rsn| rsn.defer(j as u64))?,
-				Err(_) if ub < IntVal::MIN.into() => v
-					.lit(ctx, IntLitMeaning::Less(IntVal::MIN))
-					.require(ctx, |_, rsn| rsn.defer(j as u64))?,
-				Err(_) => {
-					debug_assert!(ub > v.max(ctx).into());
-				}
-			}
-		}
+		let _ = self.propagate_terms(ctx, lb_sum)?;
 		Ok(())
 	}
 }
@@ -869,7 +1029,7 @@ impl IntLinearLessEqImpBounds<OverflowPossible, solver::View<IntVal>, Decision<b
 		E: PostingActions + ?Sized,
 		solver::View<IntVal>: IntInspectionActions<E>,
 	{
-		let mut max = max.into();
+		let max = max.into();
 		let reification = match reification.0 {
 			BoolView::Lit(r) => r,
 			BoolView::Const(true) => {
@@ -877,27 +1037,267 @@ impl IntLinearLessEqImpBounds<OverflowPossible, solver::View<IntVal>, Decision<b
 			}
 			BoolView::Const(false) => return,
 		};
-		let vars: Vec<_> = vars
-			.into_iter()
-			.filter(|v| {
-				if let Some(c) = v.val(solver) {
-					max -= DoubleIntVal::from(c);
-					false
-				} else {
-					true
-				}
-			})
-			.collect();
-		assert!(
-			!vars.is_empty(),
-			"`IntLinearLessEqImpBounds::post` must be given at least one term"
-		);
+		let prop = Self::build(solver, vars, max, reification);
+		solver.add_propagator(Box::new(prop));
+	}
+}
 
-		solver.add_propagator(Box::new(Self {
-			terms: vars.clone(),
-			max,
-			reification,
-		}));
+impl<const TRACK_MAX: bool>
+	IntLinearLessEqImpSlack<OverflowPossible, solver::View<IntVal>, Decision<bool>, TRACK_MAX>
+{
+	/// Create a new [`IntLinearLessEqImpSlack`] propagator and post it in the
+	/// solver.
+	///
+	/// # Panics
+	///
+	/// Panics if no terms are given. An empty linear constraint is a constant
+	/// comparison rather than a propagation problem, so the caller must
+	/// evaluate it directly instead of posting a propagator.
+	pub fn post<E>(
+		solver: &mut E,
+		vars: impl IntoIterator<Item = solver::View<IntVal>>,
+		max: impl Into<DoubleIntVal>,
+		reification: solver::View<bool>,
+	) where
+		E: PostingActions + ?Sized,
+		solver::View<IntVal>: IntInspectionActions<E>,
+	{
+		let max = max.into();
+		let reification = match reification.0 {
+			BoolView::Lit(r) => r,
+			BoolView::Const(true) => {
+				return IntLinearLessEqSlack::<_, _, TRACK_MAX>::post(solver, vars, max);
+			}
+			BoolView::Const(false) => return,
+		};
+		let inner = IntLinearLessEqImpBounds::build(solver, vars, max, reification);
+		let prop = Self::new(solver, inner);
+		solver.add_propagator(Box::new(prop));
+	}
+}
+
+impl<const TRACK_MAX: bool>
+	IntLinearLessEqSlack<OverflowPossible, solver::View<IntVal>, TRACK_MAX>
+{
+	/// Create a new [`IntLinearLessEqSlack`] propagator and post it in the
+	/// solver.
+	///
+	/// # Panics
+	///
+	/// Panics if no terms are given. An empty linear constraint is a constant
+	/// comparison rather than a propagation problem, so the caller must
+	/// evaluate it directly instead of posting a propagator.
+	pub fn post<E>(
+		solver: &mut E,
+		vars: impl IntoIterator<Item = solver::View<IntVal>>,
+		max: impl Into<DoubleIntVal>,
+	) where
+		E: PostingActions + ?Sized,
+		solver::View<IntVal>: IntInspectionActions<E>,
+	{
+		let inner = IntLinearLessEqBounds::build(solver, vars, max, True);
+		let prop = Self::new(solver, inner);
+		solver.add_propagator(Box::new(prop));
+	}
+}
+
+impl<OF, IV, BV, const TRACK_MAX: bool> IntLinearLessEqSlackImpl<OF, IV, BV, TRACK_MAX>
+where
+	OF: OverflowMode,
+{
+	/// Create the propagator around `inner`, allocating and seeding its trailed
+	/// state from the current bounds of the terms.
+	fn new<E>(solver: &mut E, inner: IntLinearLessEqBoundsImpl<OF, IV, BV>) -> Self
+	where
+		E: PostingActions + ?Sized,
+		IV: IntInspectionActions<E>,
+	{
+		let sum = |bound: fn(&IV, &E) -> IntVal, solver: &E| -> DoubleIntVal {
+			inner
+				.terms
+				.iter()
+				.map(|v| DoubleIntVal::from(bound(v, solver)))
+				.sum()
+		};
+		let lb_sum = sum(IV::min, solver);
+		let ub_sum = TRACK_MAX.then(|| sum(IV::max, solver));
+		let slack = solver.new_trailed(saturate(inner.max.into() - lb_sum));
+		let max_slack = solver.new_trailed(match ub_sum {
+			Some(ub_sum) => saturate(inner.max.into() - ub_sum),
+			None => IntVal::MIN,
+		});
+		// No propagation has happened yet, so the largest span is not yet known.
+		let max_span = solver.new_trailed(IntVal::MAX);
+		Self {
+			inner,
+			slack,
+			max_span,
+			max_slack,
+		}
+	}
+
+	/// Recompute the incrementally maintained slacks from scratch, given the
+	/// sum of the minima of all terms.
+	///
+	/// The maintained slacks are approximations that this restores to their
+	/// exact values, and both ways in which they drift are safe:
+	///
+	/// - They can be *too large*, because an advisor is not told about a change
+	///   until the SAT solver reports the corresponding literal back, so a
+	///   change a propagator has already enacted may not be accounted for yet.
+	///   Every enacted change is eventually reported and the advisor decides
+	///   again on each one, so the last advice for a batch of changes is taken
+	///   with all of them applied.
+	/// - They can be *too small*, because a term whose domain is nearly the
+	///   full [`IntVal`] range, or a change that could not be attributed to a
+	///   single value, saturates the slack towards [`IntVal::MIN`]. That only
+	///   schedules the propagator when it has nothing to do, and this recompute
+	///   then restores the exact value.
+	fn resync<E>(&self, ctx: &mut E::PropagationContext<'_>, lb_sum: OF::Accumulator)
+	where
+		E: ReasoningEngine,
+		IV: IntSolverActions<E>,
+	{
+		let _ = ctx.set_trailed(self.slack, saturate(self.inner.max.into() - lb_sum.into()));
+
+		if TRACK_MAX {
+			let ub_sum: DoubleIntVal = self
+				.inner
+				.terms
+				.iter()
+				.map(|v| DoubleIntVal::from(v.max(ctx)))
+				.sum();
+			let _ = ctx.set_trailed(self.max_slack, saturate(self.inner.max.into() - ub_sum));
+		}
+	}
+
+	/// Apply a term's bound change to a trailed `max - Σ bound` value, keeping
+	/// it saturated within the [`IntVal`] range.
+	fn shift<Ctx: TrailingActions>(
+		ctx: &mut Ctx,
+		slack: Trailed<IntVal>,
+		previous: IntVal,
+		current: IntVal,
+	) {
+		let shifted = DoubleIntVal::from(ctx.trailed(slack))
+			- (DoubleIntVal::from(current) - DoubleIntVal::from(previous));
+		let _ = ctx.set_trailed(slack, saturate(shifted));
+	}
+
+	/// Whether the current slack allows any term to still be pruned, and the
+	/// propagator therefore has to run.
+	fn should_enqueue<Ctx: TrailingActions>(&self, ctx: &Ctx) -> bool {
+		// Once the sum of the maxima fits under the right-hand side the
+		// constraint can no longer be violated, so nothing can be pruned.
+		if TRACK_MAX && ctx.trailed(self.max_slack) >= 0 {
+			return false;
+		}
+		let max_span = ctx.trailed(self.max_span);
+		max_span == IntVal::MAX || ctx.trailed(self.slack) < max_span
+	}
+}
+
+impl<OF, BV, E, IV, const TRACK_MAX: bool> Propagator<E>
+	for IntLinearLessEqSlackImpl<OF, IV, BV, TRACK_MAX>
+where
+	OF: OverflowMode,
+	E: ReasoningEngine,
+	BV: BoolSolverActions<E>,
+	IV: IntSolverActions<E>,
+	E::Atom: BoolSolverActions<E>,
+{
+	fn advise_of_int_change(
+		&mut self,
+		ctx: &mut E::NotificationContext<'_>,
+		data: u64,
+		event: IntEvent,
+		previous: Option<IntVal>,
+	) -> bool {
+		let Some(previous) = previous else {
+			// A term backed by a Boolean is advised through its literal, which is
+			// only ever reported as becoming fixed and carries no value to
+			// attribute the change to. The maintained slack can then only be
+			// brought up to date by running the propagator.
+			debug_assert_eq!(event, IntEvent::Fixed);
+			// Saturate the slack so that it stays an under-estimate until the
+			// propagator runs and recomputes it.
+			let _ = ctx.set_trailed(self.slack, IntVal::MIN);
+			return true;
+		};
+		let term = self.inner.terms[data as usize].clone();
+		let previous = term.transform_decision_val(previous);
+		match event {
+			IntEvent::LowerBound => Self::shift(ctx, self.slack, previous, term.min(ctx)),
+			IntEvent::UpperBound => {
+				debug_assert!(TRACK_MAX);
+				Self::shift(ctx, self.max_slack, previous, term.max(ctx));
+			}
+			e => unreachable!("advised of {e:?} by a bound subscription"),
+		}
+		self.should_enqueue(ctx)
+	}
+
+	fn explain(
+		&mut self,
+		ctx: &mut E::ExplanationContext<'_>,
+		lit: E::Atom,
+		data: u64,
+		reason: &mut E::ReasonSink<'_>,
+	) {
+		self.inner.explain(ctx, lit, data, reason);
+	}
+
+	fn initialize(&mut self, ctx: &mut E::InitializationContext<'_>) {
+		ctx.set_priority(PriorityLevel::Low);
+		// Run once, so that the largest span of the terms becomes known and the
+		// advisor can start suppressing work.
+		ctx.enqueue_now(true);
+		for (i, v) in self.inner.terms.iter().enumerate() {
+			v.advise_when(ctx, IntPropCond::LowerBound, i as u64);
+			if TRACK_MAX {
+				// A second subscription, rather than `IntPropCond::Bounds`, so that
+				// each bound is advised of separately and can be attributed.
+				v.advise_when(ctx, IntPropCond::UpperBound, i as u64);
+			}
+		}
+		self.inner.reification.enqueue_when_fixed(ctx);
+	}
+
+	#[tracing::instrument(
+		name = "int_linear_less_eq_slack",
+		target = "solver",
+		level = "trace",
+		skip(self, ctx)
+	)]
+	fn propagate(&mut self, ctx: &mut E::PropagationContext<'_>) -> Result<(), E::Conflict> {
+		// The maintained slack is brought up to date even when the constraint is
+		// switched off, so that it never has to be reasoned about as stale.
+		let lb_sum: OF::Accumulator = self
+			.inner
+			.terms
+			.iter()
+			.map(|v| OF::Accumulator::from(v.min(ctx)))
+			.sum();
+		self.resync(ctx, lb_sum);
+
+		let r_val = self.inner.reification.val(ctx);
+		if r_val == Some(false) {
+			return Ok(());
+		}
+
+		if TypeId::of::<BV>() != TypeId::of::<True>() && lb_sum > self.inner.max {
+			let inner = &self.inner;
+			inner.reification.fix(ctx, false, |ctx, reason| {
+				reason.extend(inner.terms.iter().map(|v| v.min_lit(ctx)));
+			})?;
+		}
+		if r_val != Some(true) {
+			return Ok(());
+		}
+
+		let max_span = self.inner.propagate_terms(ctx, lb_sum)?;
+		let _ = ctx.set_trailed(self.max_span, max_span);
+		Ok(())
 	}
 }
 
@@ -1155,15 +1555,199 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		IntVal,
-		constraints::int_linear::{DoubleIntVal, IntLinearLessEqBounds, IntLinearNotEqValue},
+		IntSet, IntVal,
+		actions::IntInspectionActions,
+		constraints::int_linear::{
+			DoubleIntVal, IntLinearLessEqBounds, IntLinearLessEqSlack, IntLinearNotEqValue,
+			LinearScheduling,
+		},
 		model::{Model, view::View},
-		solver::{LiteralStrategy, Solver},
+		solver::{IntLitMeaning, LiteralStrategy, Solver},
 	};
 
 	#[test]
 	fn double_int_val() {
 		assert_eq!(size_of::<DoubleIntVal>(), 2 * size_of::<IntVal>());
+	}
+
+	/// The scheduling strategy must not change what the propagator infers, only
+	/// how often it runs, so every strategy has to admit the same solutions.
+	#[test]
+	#[traced_test]
+	fn scheduling_preserves_solutions() {
+		for scheduling in [
+			LinearScheduling::Eager,
+			LinearScheduling::Slack,
+			LinearScheduling::SlackEntailment,
+		] {
+			let mut prb = Model::default();
+			let r = prb.new_bool_decision();
+			let a = prb.new_int_decision(1..=4);
+			let b = prb.new_int_decision(1..=4);
+			// A two-valued domain is backed by a Boolean, whose advisor arrives
+			// through the literal path without a value to attribute the change to.
+			let c = prb.new_int_decision(1..=2);
+
+			// A `le`, a `ge` (negated terms) and a half-reified `le`, so that both
+			// the plain and the reified propagator are covered in both directions.
+			prb.linear(a * 2 + b + c)
+				.le(9)
+				.scheduling(scheduling)
+				.post()
+				.unwrap();
+			prb.linear(a + b * 3 - c)
+				.ge(2)
+				.scheduling(scheduling)
+				.post()
+				.unwrap();
+			prb.linear(a + b + c)
+				.le(6)
+				.implied_by(r)
+				.scheduling(scheduling)
+				.post()
+				.unwrap();
+
+			prb.expect_solutions(
+				&[r.into(), a, b, c],
+				expect![[r#"
+    0, 1, 1, 1
+    0, 1, 1, 2
+    0, 1, 2, 1
+    0, 1, 2, 2
+    0, 1, 3, 1
+    0, 1, 3, 2
+    0, 1, 4, 1
+    0, 1, 4, 2
+    0, 2, 1, 1
+    0, 2, 1, 2
+    0, 2, 2, 1
+    0, 2, 2, 2
+    0, 2, 3, 1
+    0, 2, 3, 2
+    0, 2, 4, 1
+    0, 3, 1, 1
+    0, 3, 1, 2
+    0, 3, 2, 1
+    1, 1, 1, 1
+    1, 1, 1, 2
+    1, 1, 2, 1
+    1, 1, 2, 2
+    1, 1, 3, 1
+    1, 1, 3, 2
+    1, 1, 4, 1
+    1, 2, 1, 1
+    1, 2, 1, 2
+    1, 2, 2, 1
+    1, 2, 2, 2
+    1, 2, 3, 1
+    1, 3, 1, 1
+    1, 3, 1, 2
+    1, 3, 2, 1"#]],
+			);
+		}
+	}
+
+	/// Once the sum of the maxima fits under the right-hand side the constraint
+	/// is entailed, and a propagator that tracks the maxima must stop
+	/// scheduling itself.
+	#[test]
+	#[traced_test]
+	fn slack_entailment_stops_scheduling() {
+		let mut slv = Solver::default();
+		let a = slv
+			.new_int_decision(0..=10)
+			.order_literals(LiteralStrategy::Eager)
+			.view();
+		let b = slv
+			.new_int_decision(0..=10)
+			.order_literals(LiteralStrategy::Eager)
+			.view();
+		IntLinearLessEqSlack::<_, _, true>::post(&mut slv, vec![a, b], 12);
+		let _ = slv.propagate_next().unwrap();
+
+		// Dropping both maxima to 5 makes the sum of the maxima 10 <= 12, so the
+		// constraint can no longer be violated.
+		slv.assign_int_lit(a, IntLitMeaning::Less(6));
+		slv.assign_int_lit(b, IntLitMeaning::Less(6));
+		assert!(!slv.propagator_enqueued(0));
+
+		// Without the entailment test the remaining slack of 7 would be below the
+		// largest span of 5, and the propagator would be scheduled for nothing.
+		slv.assign_int_lit(a, IntLitMeaning::GreaterEq(5));
+		assert!(!slv.propagator_enqueued(0));
+	}
+
+	/// The slack propagator must prune exactly as much as the eager one, also
+	/// when a hole in a domain makes a bound land below the value that was
+	/// requested.
+	#[test]
+	#[traced_test]
+	fn slack_prunes_across_domain_gaps() {
+		for slack in [false, true] {
+			let mut slv = Solver::default();
+			// `a` has a hole: tightening its maximum to anything below 10 collapses
+			// it to 0, well below the requested bound.
+			let a = slv
+				.new_int_decision(IntSet::from_iter([0..=0, 10..=10]))
+				.order_literals(LiteralStrategy::Eager)
+				.direct_literals(LiteralStrategy::Eager)
+				.view();
+			let b = slv
+				.new_int_decision(0..=10)
+				.order_literals(LiteralStrategy::Eager)
+				.view();
+			if slack {
+				IntLinearLessEqSlack::<_, _, true>::post(&mut slv, vec![a, b], 8);
+			} else {
+				IntLinearLessEqBounds::post(&mut slv, vec![a, b], 8);
+			}
+			let propagated = slv.propagate_next().unwrap();
+
+			// `a <= 8` snaps to `a <= 0`, and `b <= 8` is exact.
+			assert_eq!(a.bounds(&slv), (0, 0), "slack: {slack}");
+			assert_eq!(b.bounds(&slv), (0, 8), "slack: {slack}");
+			assert_eq!(propagated.len(), 2, "slack: {slack}");
+		}
+	}
+
+	/// A change that leaves enough slack for every term must not schedule the
+	/// propagator, while one that does not must schedule it.
+	#[test]
+	#[traced_test]
+	fn slack_skips_scheduling_when_idle() {
+		let mut slv = Solver::default();
+		let a = slv
+			.new_int_decision(0..=2)
+			.order_literals(LiteralStrategy::Eager)
+			.view();
+		let b = slv
+			.new_int_decision(0..=2)
+			.order_literals(LiteralStrategy::Eager)
+			.view();
+		IntLinearLessEqSlack::<_, _, false>::post(&mut slv, vec![a, b], 100);
+		// Run once so that the largest span is known.
+		let _ = slv.propagate_next().unwrap();
+		assert!(!slv.propagator_enqueued(0));
+
+		// Plenty of slack is left, so raising a minimum cannot prune anything.
+		slv.assign_int_lit(a, IntLitMeaning::GreaterEq(1));
+		assert!(!slv.propagator_enqueued(0));
+
+		// Once the slack drops below the largest span, the propagator has to run.
+		let mut slv2 = Solver::default();
+		let x = slv2
+			.new_int_decision(0..=10)
+			.order_literals(LiteralStrategy::Eager)
+			.view();
+		let y = slv2
+			.new_int_decision(0..=10)
+			.order_literals(LiteralStrategy::Eager)
+			.view();
+		IntLinearLessEqSlack::<_, _, false>::post(&mut slv2, vec![x, y], 12);
+		let _ = slv2.propagate_next().unwrap();
+		assert!(!slv2.propagator_enqueued(0));
+		slv2.assign_int_lit(x, IntLitMeaning::GreaterEq(6));
+		assert!(slv2.propagator_enqueued(0));
 	}
 
 	#[test]

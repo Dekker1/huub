@@ -7,7 +7,7 @@ use pindakaas::Lit as RawLit;
 use crate::{
 	actions::BoolInspectionActions,
 	solver::{
-		Solver,
+		AtRoot, Solver,
 		decision::{Decision, DecisionReference, private},
 		engine::State,
 		trail::Trail,
@@ -18,6 +18,12 @@ impl Decision<bool> {
 	/// Return whether this decision represents a negated literal.
 	pub(crate) fn is_negated(&self) -> bool {
 		self.0.is_negated()
+	}
+}
+
+impl<Sat> BoolInspectionActions<AtRoot<'_, Sat>> for Decision<bool> {
+	fn val(&self, ctx: &AtRoot<'_, Sat>) -> Option<bool> {
+		self.val(&*ctx.0)
 	}
 }
 

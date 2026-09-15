@@ -1,0 +1,26 @@
+[package]
+name = "huub-fznso"
+description = "The Huub solver as an FZnSO solver library"
+publish = false
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# An application recovers the solver's name from the file name of the library,
+# so the library must be `libhuub`: the name every entry point is exported
+# under.
+name = "huub"
+crate-type = ["cdylib"]
+
+[dependencies]
+fznso = { path = "../../../../rust/fznso" }
+# Renamed, because the library itself takes the name `huub`.
+huub-lib = { package = "huub", path = "../huub" }
+rangelist.workspace = true
+rustc-hash.workspace = true
+
+[lints]
+workspace = true

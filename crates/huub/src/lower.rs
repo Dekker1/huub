@@ -11,6 +11,7 @@ use std::{
 };
 
 use bon::Builder;
+use itertools::Itertools;
 use pindakaas::{
 	ClauseDatabase, Lit as RawLit, Unsatisfiable,
 	solver::{cadical::Cadical, propagation::ExternalPropagation},
@@ -26,8 +27,9 @@ use crate::model::deserialize::flatzinc::{
 use crate::{
 	IntSet, IntVal,
 	actions::{
-		BoolInspectionActions, ConstructionActions, IntDecisionActions, IntInspectionActions,
-		PostingActions, PropagationContext, ReasoningContext, ReasoningEngine, Trailed,
+		BoolInspectionActions, BoolPropagationActions, ConstructionActions, IntDecisionActions,
+		IntInspectionActions, IntSimplificationActions, PostingActions, PropagationContext,
+		ReasoningContext, ReasoningEngine, Trailed,
 	},
 	constraints::{
 		BoxedConstraint, BoxedPropagator, Constraint, NO_REASON, Nogood,
@@ -158,7 +160,10 @@ trait LoweringActions {
 	) -> Result<(), Nogood<solver::Decision<bool>>>;
 
 	/// Add a propagator to the solver.
-	fn add_propagator(&mut self, propagator: BoxedPropagator) -> PropagatorId;
+	///
+	/// When `from_model` is set, the propagator is assumed to be at fix-point,
+	/// because the [`Model`] it was lowered from has already been propagated.
+	fn add_propagator(&mut self, propagator: BoxedPropagator, from_model: bool) -> PropagatorId;
 
 	/// Get the current value of a [`BoolView`], if it has been assigned.
 	fn bool_val(&self, bv: solver::Decision<bool>) -> Option<bool>;
@@ -234,6 +239,13 @@ pub struct LoweringContext<'a> {
 	/// Error that captures the clause that caused methods to return
 	/// [`Unsatisfiable`].
 	pub(crate) error: Option<LoweringError>,
+	/// Whether the propagation of the source [`Model`] has reached the same
+	/// fix-point as the [`Solver`], which allows newly posted propagators to
+	/// skip their initial propagation.
+	///
+	/// This does not hold when a [`Model`] extends an existing [`Solver`]: the
+	/// solver may know more about the bound decisions than the model does.
+	from_model: bool,
 	/// The state of the trailed values in the source [`Model`] object.
 	trail: &'a [[u8; 8]],
 }
@@ -585,6 +597,71 @@ impl Lowerer {
 }
 
 impl<State: lowerer::State> Lowerer<&mut Model, State> {
+	/// Lower the [`Model`] into an existing [`Solver`], adding its decisions
+	/// and constraints to those the solver already has.
+	///
+	/// Each binding pairs a decision of the [`Model`] with a view that already
+	/// exists in `solver`, which lets the model refer to decisions lowered
+	/// earlier. The model decision stands in for the solver view: anything
+	/// the simplification of the model concludes about it, such as a smaller
+	/// domain or an alias to another decision, is enforced on the solver view
+	/// it is bound to.
+	///
+	/// The solver view may already be more restricted than the model decision
+	/// that stands in for it, so the propagators this adds are propagated
+	/// again before the next search.
+	///
+	/// Only [`int_eager_limit`](Lowerer::int_eager_limit) and the objective
+	/// polarity are used from the builder: the other options configure the
+	/// creation of a new SAT solver.
+	///
+	/// ```
+	/// # use huub::{
+	/// # 	model::{Model, deserialize::AnyView},
+	/// # 	solver::{self, Solver, Status, Valuation},
+	/// # };
+	/// let mut model = Model::default();
+	/// let x = model.new_int_decision(1..=5);
+	/// let (mut solver, map): (Solver, _) = model.lower().to_solver()?;
+	/// let solver_x = map.get(&mut solver, x);
+	///
+	/// // A second model, in which `y` stands in for the `x` of the solver.
+	/// let mut extension = Model::default();
+	/// let y = extension.new_int_decision(1..=5);
+	/// extension.linear(y).ge(4).post().unwrap();
+	/// extension.lower().extend_solver(
+	/// 	&mut solver,
+	/// 	[(AnyView::Int(y), solver::AnyView::Int(solver_x))],
+	/// )?;
+	///
+	/// let mut found = None;
+	/// let (status, _) = solver
+	/// 	.solve()
+	/// 	.on_solution(|sol| found = Some(solver_x.val(sol)))
+	/// 	.minimize(solver_x);
+	/// assert_eq!(status, Status::Complete);
+	/// assert_eq!(found, Some(4));
+	/// # Ok::<(), Box<dyn std::error::Error>>(())
+	/// ```
+	///
+	/// # Panics
+	///
+	/// Panics if a binding does not pair a decision of the model, rather than a
+	/// view of one, with a solver view of the same type, or if a decision is
+	/// bound more than once.
+	pub fn extend_solver<Sat>(
+		self,
+		solver: &mut Solver<Sat>,
+		bindings: impl IntoIterator<Item = (model::deserialize::AnyView, solver::AnyView)>,
+	) -> Result<LoweringMap, LoweringError>
+	where
+		Sat: ExternalPropagation,
+		State: lowerer::IsComplete,
+	{
+		self.finish_internal()
+			.extend_solver_internal(solver, bindings)
+	}
+
 	/// Lower the [`Model`] to a [`Solver`].
 	///
 	/// This method will simplify the model, create the mapping between model
@@ -712,6 +789,164 @@ impl Lowerer<Result<FlatZincLowerData, FlatZincError>, lowerer::Empty> {
 }
 
 impl LowererComplete<&mut Model> {
+	/// Internal implementation of [`Lowerer::extend_solver`].
+	fn extend_solver_internal<Sat: ExternalPropagation>(
+		self,
+		slv: &mut Solver<Sat>,
+		bindings: impl IntoIterator<Item = (model::deserialize::AnyView, solver::AnyView)>,
+	) -> Result<LoweringMap, LoweringError> {
+		use model::deserialize::AnyView as ModelAnyView;
+
+		let LowererComplete {
+			origin: model,
+			int_eager_limit,
+			objective,
+			..
+		} = self;
+		let bool_decision = |idx: usize| {
+			model::Decision::<bool>(RawLit::from_raw(NonZeroI32::new(idx as i32 + 1).unwrap()))
+		};
+		// The solver may still hold the assignment of its last search, which
+		// the bound decisions and the lowered constraints must not take as
+		// facts.
+		let at_root = slv.at_root();
+		let slv = &mut *at_root.0;
+
+		// Seed the mapping with the bound decisions, so that they are not
+		// created again, and so that every view of them resolves to the solver
+		// view they stand in for.
+		let mut map_builder = LoweringMapBuilder {
+			bool_map: vec![None; model.bool_vars.len()],
+			int_eager_limit,
+			int_map: vec![None; model.int_vars.len()],
+		};
+		let mut bound_bool = Vec::new();
+		let mut bound_int = Vec::new();
+		for binding in bindings {
+			match binding {
+				(
+					ModelAnyView::Bool(model::View(model::view::boolean::BoolView::Decision(lit))),
+					solver::AnyView::Bool(view),
+				) => {
+					let entry = &mut map_builder.bool_map[lit.idx()];
+					assert!(entry.is_none(), "a decision can only be bound once");
+					*entry = Some(if lit.is_negated() { !view } else { view });
+					bound_bool.push(lit.idx());
+				}
+				(
+					ModelAnyView::Int(model::View(IntView::Linear(lin))),
+					solver::AnyView::Int(view),
+				) if lin.scale.get() == 1 && lin.offset == 0 => {
+					let entry = &mut map_builder.int_map[lin.var.idx()];
+					assert!(entry.is_none(), "a decision can only be bound once");
+					*entry = Some(view);
+					bound_int.push(lin.var.idx());
+				}
+				binding => panic!(
+					"a binding must pair a model decision with a solver view of the same type, found {binding:?}"
+				),
+			}
+		}
+
+		// A bound decision knows no more than the solver does at the root:
+		// lowering a constraint assumes that simplification has already removed
+		// the arguments that are fixed, and the solver may have fixed them
+		// since they were lowered.
+		for &idx in &bound_int {
+			let domain = map_builder.int_map[idx].unwrap().domain(slv);
+			model::View::from(model::Decision::<IntVal>(idx as u32))
+				.restrict_domain(model, &domain, NO_REASON)?;
+		}
+		for &idx in &bound_bool {
+			if let Some(val) = map_builder.bool_map[idx].unwrap().val(slv) {
+				model::View::from(bool_decision(idx)).fix(model, val, NO_REASON)?;
+			}
+		}
+
+		model.propagate()?;
+
+		let constraints = std::mem::take(&mut model.constraints);
+		for (idx, c) in constraints.iter().enumerate() {
+			if let Some(c) = c {
+				let mut ctx = ModelInitContext::new(model, ConstraintId::new(idx));
+				c.analyze(&mut ctx);
+			}
+		}
+		if let Some(obj) = objective {
+			GoalPolarity::process(model, &constraints, obj);
+		}
+		model.constraints = constraints;
+
+		for (idx, _) in model.int_vars.iter().enumerate() {
+			map_builder.get_or_create_int(model, slv, model::Decision(idx as u32));
+		}
+		for var in 1..=model.bool_vars.len() as u32 {
+			let raw = RawLit::from_raw(NonZeroI32::new(var as i32).unwrap());
+			map_builder.get_or_create_bool(model, slv, model::Decision(raw).into());
+		}
+		let map = map_builder.finalize();
+
+		// Enforce on each bound solver view what the model concluded about the
+		// decision standing in for it. Aliases between integer decisions are
+		// left for last, because they are enforced through a constraint.
+		let mut int_aliases = Vec::new();
+		for idx in bound_int {
+			let view = map.int_map[idx];
+			match model::Decision::<IntVal>(idx as u32)
+				.resolve_alias(model)
+				.into_inner()
+				.0
+			{
+				IntView::Linear(lin) if lin.var.idx() == idx => {
+					let Domain::Domain(dom) = &model.int_vars[idx].domain else {
+						unreachable!()
+					};
+					let min = view.lit(slv, IntLitMeaning::GreaterEq(*dom.min().unwrap()));
+					slv.add_clause([min])?;
+					if let Some(ub) = dom.max().unwrap().checked_add(1) {
+						let max = view.lit(slv, IntLitMeaning::Less(ub));
+						slv.add_clause([max])?;
+					}
+					for (prev, next) in dom.intervals().tuple_windows() {
+						let below = view.lit(slv, IntLitMeaning::Less(*prev.end() + 1));
+						let above = view.lit(slv, IntLitMeaning::GreaterEq(*next.start()));
+						slv.add_clause([below, above])?;
+					}
+				}
+				IntView::Const(val) => {
+					let fixed = view.lit(slv, IntLitMeaning::Eq(val));
+					slv.add_clause([fixed])?;
+				}
+				resolved => int_aliases.push(IntEq {
+					vars: [
+						model::Decision::<IntVal>(idx as u32).into(),
+						model::View(resolved),
+					],
+				}),
+			}
+		}
+		for idx in bound_bool {
+			let decision = bool_decision(idx);
+			let resolved = decision.resolve_alias(model).into_inner();
+			if resolved != decision.into() {
+				let view = map.bool_map[idx];
+				let target = map.get(slv, resolved);
+				slv.add_clause([!view, target])?;
+				slv.add_clause([view, !target])?;
+			}
+		}
+
+		let mut ctx = LoweringContext::new(slv, &map, &model.trail, false);
+		for alias in &int_aliases {
+			<IntEq as Constraint<Model>>::to_solver(alias, &mut ctx)?;
+		}
+		for c in model.constraints.iter().flatten() {
+			c.to_solver(&mut ctx)?;
+		}
+
+		Ok(map)
+	}
+
 	/// Internal implementation for lowering a model to a solver.
 	fn into_solver_internal<Sat>(self) -> Result<(Solver<Sat>, LoweringMap), LoweringError>
 	where
@@ -804,7 +1039,7 @@ impl LowererComplete<&mut Model> {
 		let map = map_builder.finalize();
 
 		// Create constraint data structures within the solver
-		let mut ctx = LoweringContext::new(&mut slv, &map, &model.trail);
+		let mut ctx = LoweringContext::new(&mut slv, &map, &model.trail, true);
 		for c in model.constraints.iter().flatten() {
 			c.to_solver(&mut ctx)?;
 		}
@@ -866,15 +1101,19 @@ impl<'a> LoweringContext<'a> {
 	}
 
 	/// Create a lowering context for a solver, a mapping, and a trail snapshot.
+	///
+	/// See [`Self::from_model`] for the meaning of `from_model`.
 	pub(crate) fn new<O: ExternalPropagation>(
 		slv: &'a mut Solver<O>,
 		map: &'a LoweringMap,
 		trail: &'a [[u8; 8]],
+		from_model: bool,
 	) -> Self {
 		Self {
 			slv,
 			map,
 			error: None,
+			from_model,
 			trail,
 		}
 	}
@@ -927,6 +1166,7 @@ impl Debug for LoweringContext<'_> {
 			.field("slv", &ptr)
 			.field("map", &self.map)
 			.field("error", &self.error)
+			.field("from_model", &self.from_model)
 			.field("trail", &self.trail)
 			.finish()
 	}
@@ -943,7 +1183,7 @@ impl PostingActions for LoweringContext<'_> {
 	}
 
 	fn add_propagator(&mut self, propagator: BoxedPropagator) -> PropagatorId {
-		self.slv.add_propagator(propagator)
+		self.slv.add_propagator(propagator, self.from_model)
 	}
 
 	fn update_initialization(&mut self, prop: PropagatorId) {
@@ -1301,8 +1541,8 @@ impl<Sat: ExternalPropagation> LoweringActions for Solver<Sat> {
 		self.add_clause(clause)
 	}
 
-	fn add_propagator(&mut self, propagator: BoxedPropagator) -> PropagatorId {
-		self.add_propagator(propagator, true)
+	fn add_propagator(&mut self, propagator: BoxedPropagator, from_model: bool) -> PropagatorId {
+		self.add_propagator(propagator, from_model)
 	}
 
 	fn bool_val(&self, bv: solver::Decision<bool>) -> Option<bool> {
@@ -1517,13 +1757,121 @@ impl IntInspectionActions<dyn LoweringActions + '_> for solver::Decision<IntVal>
 mod tests {
 	use crate::{
 		IntVal,
+		actions::{BoolSimplificationActions, IntDecisionActions, IntSimplificationActions},
 		model::{
 			Model, View,
+			deserialize::AnyView,
 			view::{boolean::BoolView, integer::IntView},
 		},
-		solver::{Polarity, Solver, Status, Valuation},
+		solver::{self, IntLitMeaning, Polarity, Solver, Status, Valuation},
 		views::LinearView,
 	};
+
+	/// Aliases that the simplification of an extending model finds between
+	/// bound decisions are enforced on the solver views they stand in for.
+	#[test]
+	fn extend_solver_enforces_aliases() {
+		let mut model = Model::default();
+		let a = model.new_int_decision(1..=5);
+		let b = model.new_int_decision(1..=5);
+		let p = model.new_bool_decision();
+		let q = model.new_bool_decision();
+		let (mut slv, map): (Solver, _) = model.lower().to_solver().unwrap();
+		let (a, b, p, q) = (
+			map.get(&mut slv, a),
+			map.get(&mut slv, b),
+			map.get(&mut slv, p),
+			map.get(&mut slv, q),
+		);
+
+		let mut extension = Model::default();
+		let x = extension.new_int_decision(1..=3);
+		let y = extension.new_int_decision(1..=5);
+		let r = extension.new_bool_decision();
+		let s = extension.new_bool_decision();
+		x.unify(&mut extension, y).unwrap();
+		r.unify(&mut extension, !s).unwrap();
+		let _ = extension
+			.lower()
+			.extend_solver(
+				&mut slv,
+				[
+					(AnyView::Int(x), solver::AnyView::Int(a)),
+					(AnyView::Int(y), solver::AnyView::Int(b)),
+					(AnyView::Bool(r), solver::AnyView::Bool(p)),
+					(AnyView::Bool(s), solver::AnyView::Bool(q)),
+				],
+			)
+			.unwrap();
+
+		let vars: Vec<solver::AnyView> = vec![a.into(), b.into(), p.into(), q.into()];
+		let mut solutions = Vec::new();
+		let status = slv
+			.solve()
+			.all_solutions(vars.clone())
+			.collect_solutions_in(vars, &mut solutions)
+			.satisfy();
+		assert_eq!(status, Status::Complete);
+		assert_eq!(solutions.len(), 6);
+		for sol in solutions {
+			assert_eq!(sol[0], sol[1]);
+			assert!(sol[0] <= solver::Value::Int(3));
+			assert_ne!(sol[2], sol[3]);
+		}
+	}
+
+	/// A decision bound to a constant is a constant to the extending model, so
+	/// a conflict with it is found by simplification.
+	#[test]
+	fn extend_solver_simplifies_with_constants() {
+		let mut model = Model::default();
+		let a = model.new_int_decision(1..=10);
+		model.linear(a).eq(3).post().unwrap();
+		let (mut slv, map): (Solver, _) = model.lower().to_solver().unwrap();
+		let a = map.get(&mut slv, a);
+
+		let mut extension = Model::default();
+		let x = extension.new_int_decision(1..=10);
+		extension.linear(x).le(2).post().unwrap();
+		assert!(
+			extension
+				.lower()
+				.extend_solver(&mut slv, [(AnyView::Int(x), solver::AnyView::Int(a))])
+				.is_err()
+		);
+	}
+
+	/// A decision bound to a solver view that the solver has fixed at the root
+	/// is fixed in the extending model too, so a conflict with it is found by
+	/// simplification, rather than by a propagator that could not see it.
+	#[test]
+	fn extend_solver_simplifies_with_the_root() {
+		let mut slv: Solver = Solver::default();
+		let a = slv.new_int_decision(1..=10).view();
+		let b = slv.new_int_decision(1..=10).view();
+		let a3 = a.lit(&mut slv, IntLitMeaning::Eq(3));
+		let b3 = b.lit(&mut slv, IntLitMeaning::Eq(3));
+		slv.add_clause([a3]).unwrap();
+		slv.add_clause([b3]).unwrap();
+		assert_eq!(slv.solve().satisfy(), Status::Satisfied);
+
+		let mut extension = Model::default();
+		let x = extension.new_int_decision(1..=10);
+		let y = extension.new_int_decision(1..=10);
+		extension.linear(x + y).le(5).post().unwrap();
+		assert!(
+			extension
+				.lower()
+				.extend_solver(
+					&mut slv,
+					[
+						(AnyView::Int(x), solver::AnyView::Int(a)),
+						(AnyView::Int(y), solver::AnyView::Int(b)),
+					],
+				)
+				.is_err()
+		);
+	}
 
 	/// Helper to find the model storage index of the integer decision backing
 	/// the given (unscaled) model view.

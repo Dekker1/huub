@@ -1182,6 +1182,15 @@ impl OmegaThetaTree {
 	fn annotate_gray_task(&mut self, task_no: usize) {
 		assert!(task_no < self.task_no.len());
 		let idx = self.node_index(task_no);
+		if self.nodes[idx].total_durations_gray == 0 {
+			// A task without a duration is removed instead. A gray task is
+			// found by its gray duration, so one without could never be
+			// removed from the tree, and edge finding would not terminate.
+			// Nothing is lost: for it to complete after a set of tasks it
+			// must start after them, which its earliest start time already
+			// says.
+			self.nodes[idx].earliest_completion_gray = i64::MIN;
+		}
 		self.nodes[idx].total_durations = 0;
 		self.nodes[idx].earliest_completion = i64::MIN;
 		self.recursive_update(idx);
@@ -1433,6 +1442,7 @@ mod tests {
 
 	use crate::{
 		constraints::disjunctive::DisjunctivePropagator,
+		model::Model,
 		solver::{LiteralStrategy, Solver},
 	};
 
@@ -1491,6 +1501,50 @@ mod tests {
 		2, 4, 1
 		4, 0, 3
 		4, 1, 0"#]],
+			);
+		}
+	}
+
+	/// A task without a duration must still not start inside another task, and
+	/// edge finding must terminate in its presence.
+	///
+	/// Only configurations with edge finding are tested: overload checking on
+	/// its own does not detect a zero-duration task inside another.
+	#[test]
+	#[traced_test]
+	fn test_disjunctive_strict_zero_duration() {
+		let edge_finding = true;
+		for (not_last, detectable_precedence) in itertools::iproduct!([true, false], [true, false])
+		{
+			let mut model = Model::default();
+			let a = model.new_int_decision(0..=3);
+			let b = model.new_int_decision(0..=3);
+			model
+				.disjunctive()
+				.start_times(vec![a, b])
+				.durations(vec![2, 0])
+				.edge_finding_propagation(edge_finding)
+				.not_last_propagation(not_last)
+				.detectable_precedence_propagation(detectable_precedence)
+				.post()
+				.unwrap();
+
+			model.expect_solutions(
+				&[a, b],
+				expect![[r#"
+		0, 0
+		0, 2
+		0, 3
+		1, 0
+		1, 1
+		1, 3
+		2, 0
+		2, 1
+		2, 2
+		3, 0
+		3, 1
+		3, 2
+		3, 3"#]],
 			);
 		}
 	}

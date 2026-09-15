@@ -74,6 +74,28 @@ pub trait AssumptionChecker {
 	fn fail(&self, bv: View<bool>) -> bool;
 }
 
+/// A [`Solver`] returned to the root of the search, created by
+/// [`Solver::at_root`].
+///
+/// A search stops with the last assignment it made still in place, and
+/// anything that inspects the solver from outside a search would take that
+/// assignment for a fact of the problem. A propagator's `post` does so when it
+/// leaves out the decisions it finds fixed. While this wrapper lives, the
+/// solver shows the state at the root; dropping it restores the assignment for
+/// the search to resume from.
+///
+/// It only offers what posting needs. Searching through it would start from a
+/// trail that is not where the SAT solver is, so it cannot:
+///
+/// ```compile_fail,E0599
+/// # use huub::solver::Solver;
+/// let mut solver: Solver = Solver::default();
+/// let mut at_root = solver.at_root();
+/// at_root.solve().satisfy();
+/// ```
+#[derive(Debug)]
+pub struct AtRoot<'a, Sat = Cadical>(pub(crate) &'a mut Solver<Sat>);
+
 /// Helper method for collecting solution values.
 #[derive(Debug, Eq, PartialEq)]
 pub struct CollectSolutionsIn<'a, View: Valuation> {
@@ -359,6 +381,46 @@ fn trace_learned_clause(clause: &mut dyn Iterator<Item = RawLit>) {
 		clause = ?clause.map(i32::from).collect::<Vec<i32>>(),
 		"learn clause"
 	);
+}
+
+impl<Sat: ExternalPropagation> ConstructionActions for AtRoot<'_, Sat> {
+	fn new_trailed<T: Bytes>(&mut self, init: T) -> Trailed<T> {
+		self.0.new_trailed(init)
+	}
+}
+
+impl<Sat: ExternalPropagation> PostingActions for AtRoot<'_, Sat> {
+	type PropagatorId = PropagatorId;
+
+	fn add_clause(
+		&mut self,
+		clause: impl IntoIterator<Item = Self::Atom>,
+	) -> Result<(), Self::Conflict> {
+		self.0.add_clause(clause)
+	}
+
+	fn add_propagator(&mut self, propagator: BoxedPropagator) -> PropagatorId {
+		self.0.add_propagator(propagator, false)
+	}
+
+	fn update_initialization(&mut self, prop: PropagatorId) {
+		self.0.update_initialization(prop);
+	}
+}
+
+impl<Sat> PropagationContext for AtRoot<'_, Sat> {
+	type Conflict = Nogood<Decision<bool>>;
+	type ReasonSink<'a> = Vec<Self::Atom>;
+}
+
+impl<Sat> ReasoningContext for AtRoot<'_, Sat> {
+	type Atom = <Engine as ReasoningEngine>::Atom;
+}
+
+impl<Sat> Drop for AtRoot<'_, Sat> {
+	fn drop(&mut self) {
+		self.0.engine.borrow_mut().state.trail.reset_to_trail_head();
+	}
 }
 
 impl<A: FailedAssumptions> AssumptionChecker for A {
@@ -1016,8 +1078,7 @@ impl<Sat: ExternalPropagation + Assumptions> Solver<Sat> {
 			return Status::Unsatisfiable;
 		};
 
-		let result = self.sat.solve_assuming(assumptions);
-		match result {
+		match self.sat.solve_assuming(assumptions) {
 			SatSolveResult::Satisfied(value) => {
 				let sol = Solution {
 					sat: &value,
@@ -1032,6 +1093,32 @@ impl<Sat: ExternalPropagation + Assumptions> Solver<Sat> {
 			}
 			SatSolveResult::Unknown => Status::Unknown,
 		}
+	}
+}
+
+impl<Sat> Solver<Sat> {
+	/// Return the solver to the root of the search, for as long as the returned
+	/// [`AtRoot`] lives.
+	///
+	/// Post propagators through it after a search, so that they are not given
+	/// the assignment the search stopped at as a fact of the problem.
+	///
+	/// ```
+	/// # use huub::{
+	/// # 	constraints::int_linear::IntLinearLessEqBounds,
+	/// # 	solver::{Solver, Status},
+	/// # };
+	/// let mut solver: Solver = Solver::default();
+	/// let x = solver.new_int_decision(1..=10).view();
+	/// let y = solver.new_int_decision(1..=10).view();
+	/// assert_eq!(solver.solve().satisfy(), Status::Satisfied);
+	///
+	/// IntLinearLessEqBounds::post(&mut solver.at_root(), [x, y], 5);
+	/// assert_eq!(solver.solve().satisfy(), Status::Satisfied);
+	/// ```
+	pub fn at_root(&mut self) -> AtRoot<'_, Sat> {
+		self.engine.borrow_mut().state.trail.goto_root();
+		AtRoot(self)
 	}
 }
 
@@ -1717,12 +1804,13 @@ mod tests {
 	use crate::{
 		DeepClone, IntVal,
 		actions::{
-			BrancherInitActions, IntDecisionActions, IntEvent, IntInitActions, IntPropCond,
-			ReasoningEngine,
+			BrancherInitActions, IntDecisionActions, IntEvent, IntInitActions,
+			IntInspectionActions, IntPropCond, ReasoningEngine,
 		},
-		constraints::Propagator,
+		constraints::{Propagator, int_linear::IntLinearLessEqBounds},
 		solver::{
-			IntLitMeaning, Solver,
+			IntLitMeaning, Solver, Status, Valuation,
+			branchers::{DecisionSelection, DomainSelection, IntBrancher},
 			engine::{Engine, PropagatorId},
 			view::View,
 		},
@@ -1769,6 +1857,39 @@ mod tests {
 		let above = x.lit(&mut slv, IntLitMeaning::GreaterEq(5));
 		slv.add_clause([above]).expect("add_clause failed");
 		(slv, x, prop, advised)
+	}
+
+	/// A search stops with its solution still assigned. Through
+	/// [`Solver::at_root`], a propagator posted afterwards sees the decisions
+	/// as the problem leaves them: posting `x + y <= 5` must not drop `x` and
+	/// `y` as fixed to the last solution, and the next search must still
+	/// start.
+	#[test]
+	fn post_after_solve_inspects_root() {
+		let mut slv: Solver = Solver::default();
+		let x = slv.new_int_decision(1..=10).view();
+		let y = slv.new_int_decision(1..=10).view();
+		IntBrancher::new_in(
+			&mut slv,
+			vec![x, y],
+			DecisionSelection::InputOrder,
+			DomainSelection::IndomainMax,
+		);
+		assert_eq!(slv.solve().satisfy(), Status::Satisfied);
+		assert_eq!(IntInspectionActions::val(&x, &slv), Some(10));
+		{
+			let mut at_root = slv.at_root();
+			assert_eq!(IntInspectionActions::val(&x, &at_root), None);
+			IntLinearLessEqBounds::post(&mut at_root, [x, y], 5);
+		}
+		let mut found = None;
+		let status = slv
+			.solve()
+			.on_solution(|sol| found = Some((Valuation::val(&x, sol), Valuation::val(&y, sol))))
+			.satisfy();
+		assert_eq!(status, Status::Satisfied);
+		let (x, y) = found.unwrap();
+		assert!(x + y <= 5, "found x = {x}, y = {y}");
 	}
 
 	/// The empty clause is unconditionally unsatisfiable, reported as an

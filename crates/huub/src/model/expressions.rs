@@ -641,7 +641,13 @@ impl Model {
 			if !values.iter().tuple_windows().all(|(&x, &y)| x + 1 == y)
 				|| *values.last().unwrap() < vars.iter().map(|v| v.max(self)).max().unwrap()
 			{
-				vars[0].exclude(self, &RangeList::from_elements(values.clone()), NO_REASON)?;
+				// The first decision may take the first value, but none of the
+				// values it must precede.
+				vars[0].exclude(
+					self,
+					&RangeList::from_elements(values[1..].iter().copied()),
+					NO_REASON,
+				)?;
 
 				let con = IntValuePrecedeChainValue::new(self, values.into_iter().collect(), vars);
 				return self.post_constraint(con).map(|_| ());

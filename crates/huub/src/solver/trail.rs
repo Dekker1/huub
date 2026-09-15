@@ -153,6 +153,23 @@ impl Trail {
 		// return to the root level, lit is a persistent literal
 	}
 
+	/// Restore the state of all values to the root of the search, keeping the
+	/// changes made since so that they can be redone.
+	///
+	/// A search can stop with its last assignment still on the trail, and
+	/// anything that inspects the state from outside the search must not take
+	/// that assignment for a fact of the problem. The next assignment or
+	/// backtrack restores the trail as it would after an explanation.
+	pub(crate) fn goto_root(&mut self) {
+		let root = self
+			.prev_len
+			.first()
+			.map_or(self.trail.len(), |mark| mark.trail);
+		while self.pos > root {
+			let _ = self.undo::<true>();
+		}
+	}
+
 	/// Grow the storage for the state of Boolean variables to include enough
 	/// space for `var`.
 	pub(crate) fn grow_to_boolvar(&mut self, var: RawVar) {

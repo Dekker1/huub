@@ -250,6 +250,18 @@ impl<Sat: ExternalPropagation> IntDecisionActions<Solver<Sat>> for Decision<IntV
 	}
 }
 
+impl<Sat: ExternalPropagation> IntDecisionActions<crate::solver::AtRoot<'_, Sat>>
+	for Decision<IntVal>
+{
+	fn lit(&self, ctx: &mut crate::solver::AtRoot<'_, Sat>, meaning: IntLitMeaning) -> View<bool> {
+		self.lit(&mut *ctx.0, meaning)
+	}
+
+	fn val_lit(&self, ctx: &mut crate::solver::AtRoot<'_, Sat>) -> Option<View<bool>> {
+		IntDecisionActions::val_lit(self, &mut *ctx.0)
+	}
+}
+
 impl IntExplanationActions<State> for Decision<IntVal> {
 	fn lit_relaxed(&self, ctx: &State, mut meaning: IntLitMeaning) -> (View<bool>, IntLitMeaning) {
 		debug_assert!(
@@ -330,6 +342,56 @@ impl<Sat> IntInspectionActions<Solver<Sat>> for Decision<IntVal> {
 	fn val(&self, ctx: &Solver<Sat>) -> Option<IntVal> {
 		let (lb, ub) = self.bounds(ctx);
 		if lb == ub { Some(lb) } else { None }
+	}
+}
+
+impl<Sat> IntInspectionActions<crate::solver::AtRoot<'_, Sat>> for Decision<IntVal> {
+	fn bounds(&self, ctx: &crate::solver::AtRoot<'_, Sat>) -> (IntVal, IntVal) {
+		self.bounds(&*ctx.0)
+	}
+
+	fn domain(&self, ctx: &crate::solver::AtRoot<'_, Sat>) -> IntSet {
+		self.domain(&*ctx.0)
+	}
+
+	fn in_domain(&self, ctx: &crate::solver::AtRoot<'_, Sat>, val: IntVal) -> bool {
+		self.in_domain(&*ctx.0, val)
+	}
+
+	fn lit_meaning(
+		&self,
+		ctx: &crate::solver::AtRoot<'_, Sat>,
+		lit: View<bool>,
+	) -> Option<IntLitMeaning> {
+		self.lit_meaning(&*ctx.0, lit)
+	}
+
+	fn max(&self, ctx: &crate::solver::AtRoot<'_, Sat>) -> IntVal {
+		self.max(&*ctx.0)
+	}
+
+	fn max_lit(&self, ctx: &crate::solver::AtRoot<'_, Sat>) -> View<bool> {
+		self.max_lit(&*ctx.0)
+	}
+
+	fn min(&self, ctx: &crate::solver::AtRoot<'_, Sat>) -> IntVal {
+		self.min(&*ctx.0)
+	}
+
+	fn min_lit(&self, ctx: &crate::solver::AtRoot<'_, Sat>) -> View<bool> {
+		self.min_lit(&*ctx.0)
+	}
+
+	fn try_lit(
+		&self,
+		ctx: &crate::solver::AtRoot<'_, Sat>,
+		meaning: IntLitMeaning,
+	) -> Option<View<bool>> {
+		self.try_lit(&*ctx.0, meaning)
+	}
+
+	fn val(&self, ctx: &crate::solver::AtRoot<'_, Sat>) -> Option<IntVal> {
+		self.val(&*ctx.0)
 	}
 }
 

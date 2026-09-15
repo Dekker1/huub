@@ -1,6 +1,6 @@
 [workspace]
 
-members = ["crates/huub", "crates/huub-cli", "xtask"]
+members = ["crates/huub", "crates/huub-cli", "crates/huub-fznso", "xtask"]
 default-members = ["crates/huub", "crates/huub-cli"]
 
 resolver = "2"
@@ -97,3 +97,12 @@ codegen-units = 1
 lto = "fat"
 panic = "abort"
 strip = "symbols"
+
+# The FZnSO library is loaded into an application that is not Rust, so a panic
+# must unwind to the entry point that turns it into an error, rather than abort
+# the application. Only debug information is stripped: the entry points are
+# symbols.
+[profile.fznso]
+inherits = "release"
+panic = "unwind"
+strip = "debuginfo"

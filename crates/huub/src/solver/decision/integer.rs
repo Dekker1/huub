@@ -646,31 +646,56 @@ impl IntDecision {
 						.map(|(v, _)| v),
 				)
 			}
-			DirectStorage::Lazy(hash_map) => RangeList::from_sorted_elements(
-				domain
-					.iter()
-					.skip_while(|range| *range.end() < lb)
-					.flatten()
-					.skip_while(|&v| v < lb)
-					.map(|v| {
-						(
-							v,
-							if v == orig_lb {
-								lb_var()
-							} else if v == orig_ub {
-								ub_var()
-							} else {
-								hash_map.get(&v).copied().map(|v| v.into())
-							},
-						)
-					})
-					.take_while(|(v, _)| *v <= ub)
-					.filter(|&(_, lit)| {
-						lit.map(|lit| Decision::<bool>(lit).val(trail) != Some(false))
-							.unwrap_or(true)
-					})
-					.map(|(v, _)| v),
-			),
+			DirectStorage::Lazy(hash_map) => {
+				// A value strictly between the bounds can only have been
+				// removed from the domain through its equality literal: the
+				// order literals form a chain, and so only move the bounds.
+				// Checking the equality literals that exist is far cheaper
+				// than walking the domain, which can hold millions of values.
+				let eliminated = |lit: Option<RawLit>| {
+					lit.is_some_and(|lit| Decision::<bool>(lit).val(trail) == Some(false))
+				};
+				let holes = (lb == orig_lb && eliminated(lb_var()))
+					|| (ub == orig_ub && eliminated(ub_var()))
+					|| hash_map
+						.iter()
+						.any(|(&v, &var)| lb <= v && v <= ub && eliminated(Some(var.into())));
+				if !holes {
+					return domain
+						.iter()
+						.filter_map(|range| {
+							let min = (*range.start()).max(lb);
+							let max = (*range.end()).min(ub);
+							(min <= max).then_some(min..=max)
+						})
+						.collect();
+				}
+				RangeList::from_sorted_elements(
+					domain
+						.iter()
+						.skip_while(|range| *range.end() < lb)
+						.flatten()
+						.skip_while(|&v| v < lb)
+						.map(|v| {
+							(
+								v,
+								if v == orig_lb {
+									lb_var()
+								} else if v == orig_ub {
+									ub_var()
+								} else {
+									hash_map.get(&v).copied().map(|v| v.into())
+								},
+							)
+						})
+						.take_while(|(v, _)| *v <= ub)
+						.filter(|&(_, lit)| {
+							lit.map(|lit| Decision::<bool>(lit).val(trail) != Some(false))
+								.unwrap_or(true)
+						})
+						.map(|(v, _)| v),
+				)
+			}
 		}
 	}
 
